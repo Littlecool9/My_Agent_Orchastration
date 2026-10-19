@@ -1,0 +1,27 @@
+{
+  "name": "local-agent-orchestrator",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "doctor": "node dist/src/cli.js doctor",
+    "probe": "node dist/src/cli.js probe",
+    "connections": "node dist/src/cli.js connections",
+    "install:claude": "node scripts/install-claude.mjs",
+    "mcp": "node dist/src/cli.js mcp",
+    "start": "node dist/src/cli.js start",
+    "stop": "node dist/src/cli.js stop"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "opencode-ai": "1.19.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,3 @@
+[mcp_servers.agent-orchestrator]
+command = "E:/NodeJs/node.exe"
+args = ["D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/dist/src/cli.js", "mcp"]

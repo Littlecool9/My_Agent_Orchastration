@@ -1,0 +1,24 @@
+{
+  "executionEnabled": true,
+  "maxParallel": 2,
+  "maxAttempts": 3,
+  "taskTimeoutMinutes": 90,
+  "providers": {
+    "kimi": {
+      "baseURL": "https://api.moonshot.cn/v1",
+      "model": "kimi-k3",
+      "apiKeyEnv": "MOONSHOT_API_KEY",
+      "contextLimit": 1048576,
+      "outputLimit": 32768,
+      "options": { "reasoningEffort": "high" }
+    },
+    "deepseek": {
+      "baseURL": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "contextLimit": 1048576,
+      "outputLimit": 32768,
+      "options": {}
+    }
+  }
+}

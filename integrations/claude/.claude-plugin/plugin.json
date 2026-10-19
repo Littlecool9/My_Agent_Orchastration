@@ -1,0 +1,5 @@
+{
+  "name": "agent-orchestrator",
+  "version": "0.2.0",
+  "description": "Explicitly delegate coding to external OpenCode workers and independently review their results."
+}

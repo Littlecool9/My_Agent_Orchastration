@@ -1,0 +1,157 @@
+{
+  "spec": {
+    "contractVersion": 1,
+    "planRevision": 1,
+    "id": "alpha-prefabs-244",
+    "title": "alpha #244: Prefabs persistent identity and source format",
+    "repository": "D:/desktop/programming/C/Digipen/GAM550/alpha",
+    "fetchRemote": "origin",
+    "baseRef": "origin/master",
+    "branch": "workflow/244-prefab-identity",
+    "provider": "kimi",
+    "mode": "implement",
+    "goal": "Implement https://github.com/GAM550F26/alpha/issues/244 following design #230. Before coding, supervisor must reread the current issues and applicable AGENTS.md at the recorded latest-master base. Deliver persistent identity, versioned source format and document registry only. Do not implement #245-#255 runtime/editor features.",
+    "nonGoals": [
+      "Runtime Prefab compilation/instantiation (#245)",
+      "Editor tabs and Apply/Revert operations",
+      "Full cooker/package integration (#255)"
+    ],
+    "decisions": [
+      {
+        "id": "D1",
+        "decision": "Use the latest origin/master fetched at prepare time; record its commit.",
+        "rationale": "User explicitly selected latest master rather than the terrain feature branch."
+      },
+      {
+        "id": "D2",
+        "decision": "Keep persistent UUID/node identity separate from live Entity handles; use decimal strings for new 64-bit identity values.",
+        "rationale": "Prefab design #230 requires path-independent and never-reused authoring identities."
+      },
+      {
+        "id": "D3",
+        "decision": "Define nested-reference and patch formats without implementing later milestone behavior.",
+        "rationale": "#244 is the source-format foundation, not the whole Prefab milestone."
+      }
+    ],
+    "contextRefs": [
+      {
+        "location": "https://github.com/GAM550F26/alpha/issues/244",
+        "purpose": "Supervisor rereads authoritative acceptance criteria before dispatch."
+      },
+      {
+        "location": "https://github.com/GAM550F26/alpha/issues/230",
+        "purpose": "Supervisor includes relevant design decisions in the contract; worker does not need GitHub credentials."
+      },
+      {
+        "location": "AGENTS.md",
+        "purpose": "Current worktree module routing and build invariants."
+      },
+      {
+        "location": "modules/scene/src/scene/EntityCodec.cpp",
+        "purpose": "Inspect reusable encoding and persistent-reference boundaries after module rules."
+      }
+    ],
+    "steps": [
+      {
+        "id": "S1",
+        "instruction": "Read applicable rules and inspect current source encoding, AssetId and file-IO seams. Raise design conflicts before modifying affected code.",
+        "dependsOn": [],
+        "flexibility": "fixed"
+      },
+      {
+        "id": "S2",
+        "instruction": "Implement identity types, source document format, validation, allocation and document registry within #244 scope.",
+        "dependsOn": [
+          "S1"
+        ],
+        "flexibility": "adaptable"
+      },
+      {
+        "id": "S3",
+        "instruction": "Add meaningful tests and complete both configured Debug/Release checks, repairing local failures; return a criterion-linked report.",
+        "dependsOn": [
+          "S2"
+        ],
+        "flexibility": "adaptable"
+      }
+    ],
+    "autonomy": {
+      "localDecisions": [
+        "Private helper names and local data structures",
+        "Local algorithms and validation test fixtures",
+        "Build/test debugging that preserves agreed module/API boundaries"
+      ],
+      "escalateWhen": [
+        "Changing agreed identity/reference semantics or public module ownership",
+        "A repository invariant contradicts the contract",
+        "Meeting a criterion requires implementing #245-#255",
+        "A product-visible ambiguity cannot be resolved from #230/#244"
+      ]
+    },
+    "acceptance": [
+      {
+        "id": "AC-01",
+        "requirement": "Source .prefab JSON lives under assetsRoot/prefabs with formatVersion, prefabId UUID, nextNodeId high-water mark, rootNode and nodes. New 64-bit identity values are decimal strings."
+      },
+      {
+        "id": "AC-02",
+        "requirement": "Rename/move retains resource and node identities; copying creates a new asset UUID. Deleted node IDs are never reused, including across save/load; handle allocation overflow."
+      },
+      {
+        "id": "AC-03",
+        "requirement": "Diagnose duplicate UUIDs, duplicate node IDs and malformed node graphs with actionable errors; invalid input does not partially replace valid registry state."
+      },
+      {
+        "id": "AC-04",
+        "requirement": "Version entity-node, nested-reference, node-address, field override, added-component and removed-component records. Persist authored references, never runtime Entity handles."
+      },
+      {
+        "id": "AC-05",
+        "requirement": "Registry resolves unsaved in-memory documents before disk. Adapt UUIDs to existing cooked AssetId namespace with collision checks; full cooker integration belongs to #255."
+      },
+      {
+        "id": "AC-06",
+        "requirement": "Meaningful tests cover format round trips, identity preservation/copy, high-water allocation and invalid/duplicate inputs. Do not add runtime instantiation or editor workflows."
+      }
+    ],
+    "constraints": [
+      "Read root and relevant module AGENTS.md. Preserve module dependency rules and existing source-author headers.",
+      "Independent worktree and build directories. Debug and Release must build and all tests must pass. Reconfigure after any CMakeLists change.",
+      "Do not use sed to edit CRLF files. Keep comments short. No Co-Authored-By AI trailer.",
+      "Do not commit, push, open PRs, close issues or mutate GitHub. Provide a concise Chinese PR description as a local result.",
+      "If public APIs/files/modules change, follow this base revision's agents-md-sync workflow."
+    ],
+    "allowedPaths": [],
+    "dependencies": [],
+    "checks": [
+      {
+        "name": "debug-build-and-tests",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/scripts/alpha-check.ps1",
+          "-Preset",
+          "windows-msvc-debug"
+        ],
+        "timeoutMinutes": 120
+      },
+      {
+        "name": "release-build-and-tests",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/scripts/alpha-check.ps1",
+          "-Preset",
+          "windows-msvc-release"
+        ],
+        "timeoutMinutes": 120
+      }
+    ]
+  }
+}

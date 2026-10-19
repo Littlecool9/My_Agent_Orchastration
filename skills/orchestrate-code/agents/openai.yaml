@@ -1,0 +1,6 @@
+interface:
+  display_name: "Orchestrate Code"
+  short_description: "Delegate coding work and independently review results"
+  default_prompt: "Use $orchestrate-code to plan, delegate and review this coding task."
+policy:
+  allow_implicit_invocation: false
