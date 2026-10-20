@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Engine } from '../src/engine.js';
-import { ConfigSchema, TaskSpecSchema, type Task } from '../src/schema.js';
+import { ConfigSchema, TaskSpecSchema, type Task, type VerificationRun } from '../src/schema.js';
 import { workerEnv, type Worker } from '../src/opencode.js';
 import { ROOT, loadEnv } from '../src/config.js';
 import { git } from '../src/process.js';
@@ -43,6 +43,11 @@ async function until(engine: Engine, id: string, expected: string, timeout = 100
   while (Date.now() < end) { const t = engine.store.get(id); if (t.status === expected) return t; await delay(20); }
   throw new Error(`Expected ${expected}, got ${engine.store.get(id).status}`);
 }
+async function untilFile(file: string) {
+  const end = Date.now() + 10000;
+  while (Date.now() < end) { if (existsSync(file)) return; await delay(20); }
+  throw new Error(`Missing fixture signal: ${file}`);
+}
 
 test('review gate prevents worktree creation and dispatch without touching repository', async () => {
   const f = await fixture({ executionEnabled: false });
@@ -61,7 +66,7 @@ test('isolated worktree, real independent check, acceptance and stale-source rej
   writeFileSync(path.join(task.worktree!, 'value.txt'), 'bad\n');
   await assert.rejects(engine.review('one', 'accept', 'reviewed', ['value.txt']), /verification/);
   writeFileSync(path.join(task.worktree!, 'value.txt'), 'good\n');
-  assert.equal((await engine.review('one', 'accept', 'Code and check reviewed', ['value.txt', 'verify-actual-value.log'])).status, 'accepted');
+  assert.equal((await engine.review('one', 'accept', 'Code and check reviewed', ['value.txt', checked.checks[0]!.log])).status, 'accepted');
 });
 test('a failed independent check cannot be accepted', async () => {
   const { engine } = await fixture(); const task = await engine.prepare('one');
@@ -79,11 +84,12 @@ test('supervisor can verify and rework beyond maxAttempts until acceptance in th
     await engine.dispatch('one'); await until(engine, 'one', 'awaiting_review');
   }
   assert.equal(worker.sessions.length, 5); assert.ok(worker.sessions.every(id => id === 'fixture-session'));
+  assert.equal(engine.store.get('one').verificationHistory!.length, 4);
   const summary = engine.summary(engine.store.get('one')) as any;
   assert.equal(summary.attempts, 5); assert.equal(summary.recoveryAttempts, 0);
   assert.equal(summary.remainingRecoveryAttempts, 2); assert.equal(summary.reworkLimit, null);
   await engine.verify('one'); await until(engine, 'one', 'awaiting_review');
-  assert.equal((await engine.review('one', 'accept', 'All findings resolved', ['value.txt', 'verify-actual-value.log'])).status, 'accepted');
+  assert.equal((await engine.review('one', 'accept', 'All findings resolved', ['value.txt', engine.store.get('one').checks[0]!.log])).status, 'accepted');
 });
 test('concurrent dispatches cannot bypass the configured parallel limit', async () => {
   const { engine, worker, spec } = await fixture(); worker.hold = true;
@@ -206,7 +212,7 @@ test('branch workspace uses the repository checkout and full verification still 
   await f.engine.verify('branch-task'); const verified = await until(f.engine, 'branch-task', 'awaiting_review');
   assert.deepEqual(verified.checks.map(c => c.name), ['actual-value']);
   assert.deepEqual(verified.report!.checks.map(c => c.name), ['targeted']);
-  assert.equal((await f.engine.review('branch-task', 'accept', 'reviewed full and targeted results', ['value.txt', 'verify-actual-value.log'])).status, 'accepted');
+  assert.equal((await f.engine.review('branch-task', 'accept', 'reviewed full and targeted results', ['value.txt', verified.checks[0]!.log])).status, 'accepted');
 });
 
 test('direct primary-branch work requires a recorded warning, then prepares without another approval', async () => {
@@ -267,7 +273,7 @@ test('supervisor chooses bounded verification without running planned full-suite
   assert.deepEqual(result.checks.map(c => c.name), ['affected-value']); assert.equal(result.checks[0]!.passed, true);
   assert.equal(result.spec.checks[0]!.name, 'expensive-full');
   assert.deepEqual(result.verificationSelection?.omittedCoverage, ['Full project regression matrix']);
-  assert.equal((await f.engine.review('one', 'accept', 'Affected test passed; full-matrix omission reviewed', ['value.txt', 'verify-affected-value.log'])).status, 'accepted');
+  assert.equal((await f.engine.review('one', 'accept', 'Affected test passed; full-matrix omission reviewed', ['value.txt', result.checks[0]!.log])).status, 'accepted');
 });
 
 test('selected verification cannot skip every check or accept a failed selected check', async () => {
@@ -276,4 +282,131 @@ test('selected verification cannot skip every check or accept a failed selected 
   await f.engine.verify('one', { strategy: 'targeted', rationale: 'Focused regression', checks: [{ name: 'failure', command: process.execPath, args: ['-e', 'process.exit(4)'], timeoutMinutes: 1 }], omittedCoverage: [] });
   const result = await until(f.engine, 'one', 'awaiting_review'); assert.equal(result.checks[0]!.exitCode, 4);
   await assert.rejects(f.engine.review('one', 'accept', 'reviewed', ['log']), /checks must pass/);
+});
+
+test('stopping verification preserves completed checks, records the interrupted check and permits fresh verification and acceptance', async t => {
+  const f = await fixture(); t.after(() => f.engine.close()); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const ready = path.join(f.root, 'check-ready.json'); const unexpected = path.join(f.root, 'unexpected.txt');
+  await f.engine.verify('one', { strategy: 'custom', rationale: 'Controlled stop fixture', omittedCoverage: [], checks: [
+    { name: 'first', command: process.execPath, args: ['-e', "console.log('completed evidence')"], timeoutMinutes: 1 },
+    { name: 'slow', command: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(ready)}, JSON.stringify({pid:process.pid})); setInterval(()=>{},1000)`], timeoutMinutes: 1 },
+    { name: 'never', command: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(unexpected)},'unexpected')`], timeoutMinutes: 1 },
+  ] });
+  await untilFile(ready); const { pid } = JSON.parse(readFileSync(ready, 'utf8'));
+  const stopped = await callTool(f.engine, 'workflow_verify_stop', { id: 'one', reason: 'Choose a smaller verification scope' }) as Task;
+  assert.equal(stopped.status, 'awaiting_review');
+  const task = f.engine.store.get('one'); assert.equal(task.report!.outcome, 'ready_for_review');
+  assert.deepEqual(task.checks.map(c => [c.name, c.status]), [['first', 'passed'], ['slow', 'stopped']]);
+  assert.equal(task.verifiedFingerprint, undefined); assert.equal(existsSync(unexpected), false);
+  assert.throws(() => process.kill(pid, 0));
+  const old = task.verificationHistory![0]!; const artifact = readFileSync(path.join(f.engine.store.dir('one'), old.artifact), 'utf8');
+  assert.equal(JSON.parse(artifact).status, 'stopped');
+  assert.match(readFileSync(path.join(f.engine.store.dir('one'), task.checks[0]!.log), 'utf8'), /completed evidence/);
+  assert.equal((await f.engine.stopVerification('one', 'Repeated request')).revision, task.revision);
+  await assert.rejects(f.engine.review('one', 'accept', 'Stop is not a pass', ['value.txt']), /checks must pass/);
+  await f.engine.verify('one'); const checked = await until(f.engine, 'one', 'awaiting_review');
+  assert.deepEqual(checked.verificationHistory!.map(r => r.status), ['stopped', 'passed']);
+  assert.equal(readFileSync(path.join(f.engine.store.dir('one'), old.artifact), 'utf8'), artifact);
+  assert.notEqual(checked.checks[0]!.log, task.checks[0]!.log);
+  const complete = await f.engine.stopVerification('one', 'Already finished');
+  assert.equal(complete.verifiedFingerprint, checked.verifiedFingerprint);
+  assert.equal((await f.engine.review('one', 'accept', 'Fresh selected check passed', [checked.checks[0]!.log])).status, 'accepted');
+});
+
+test('stop before the first check launches prevents commands and whole-task cancel cannot be undone by verification completion', async t => {
+  const f = await fixture(); t.after(() => f.engine.close()); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const ready = path.join(f.root, 'cancel-ready');
+  const selection = { strategy: 'custom' as const, rationale: 'Lifecycle fixture', omittedCoverage: [], checks: [
+    { name: 'slow', command: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(ready)},'ready'); setInterval(()=>{},1000)`], timeoutMinutes: 1 },
+  ] };
+  await f.engine.verify('one', selection); await f.engine.stopVerification('one', 'Stop before spawn');
+  assert.equal(existsSync(ready), false); assert.equal(f.engine.store.get('one').checks.length, 0);
+  await f.engine.verify('one', selection); await untilFile(ready); await f.engine.cancel('one');
+  const cancelled = f.engine.store.get('one'); assert.equal(cancelled.status, 'cancelled');
+  assert.deepEqual(cancelled.verificationHistory!.map(r => r.status), ['stopped', 'cancelled']);
+  await assert.rejects(f.engine.stopVerification('one', 'Cannot reopen cancellation'), /no active verification/);
+});
+
+test('stopping Windows verification waits for compiler/test descendants to exit', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(); t.after(() => f.engine.close()); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const ready = path.join(f.root, 'descendant-ready.json');
+  await f.engine.verify('one', { strategy: 'custom', rationale: 'Process-tree fixture', omittedCoverage: [], checks: [
+    { name: 'tree', command: process.execPath, timeoutMinutes: 1, args: ['-e',
+      `const child=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true}); require('fs').writeFileSync(${JSON.stringify(ready)},JSON.stringify({parent:process.pid,child:child.pid})); setInterval(()=>{},1000)`] },
+  ] });
+  await untilFile(ready); const pids = JSON.parse(readFileSync(ready, 'utf8'));
+  await f.engine.stopVerification('one', 'Stop all test processes');
+  for (const pid of [pids.parent, pids.child]) assert.throws(() => process.kill(pid, 0));
+});
+
+test('daemon shutdown and restart retain interrupted verification history', async () => {
+  const f = await fixture(); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  await f.engine.verify('one'); await f.engine.close();
+  const task = f.engine.store.get('one'); assert.equal(task.status, 'interrupted');
+  const ref = task.verificationHistory![0]!; assert.equal(ref.status, 'interrupted');
+  // Simulate a crash snapshot left before the graceful-shutdown marker.
+  task.status = 'verifying'; ref.status = 'running'; f.engine.store.save(task);
+  const run: VerificationRun = JSON.parse(readFileSync(path.join(f.engine.store.dir('one'), ref.artifact), 'utf8'));
+  run.status = 'running'; writeFileSync(path.join(f.engine.store.dir('one'), ref.artifact), JSON.stringify(run));
+  const restored = new Engine(f.root, config, f.engine.env, f.worker).store.get('one');
+  assert.equal(restored.status, 'interrupted'); assert.equal(restored.verificationHistory![0]!.status, 'interrupted');
+});
+
+test('supervisor evidence appends immutable source-bound artifacts including after cancellation without granting acceptance', async () => {
+  const f = await fixture(); const prepared = await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const entry = { planRevision: 1, kind: 'verification' as const, summary: 'Supervisor targeted check', criterionIds: ['AC-01'], evidence: ['node targeted-check.js: exit 0'], log: 'local-test-only output' };
+  const first = await callTool(f.engine, 'workflow_evidence_add', { id: 'one', entry }) as any;
+  const artifact = readFileSync(path.join(f.engine.store.dir('one'), first.artifact), 'utf8');
+  assert.match(artifact, /\[REDACTED\]/); assert.equal(artifact.includes('local-test-only'), false);
+  assert.equal(first.sourceFingerprint, await fingerprint(prepared));
+  await assert.rejects(f.engine.review('one', 'accept', 'Testimony alone', [first.artifact]), /verification/);
+  await assert.rejects(f.engine.addEvidence('one', { ...entry, planRevision: 2 }), /stale planRevision/);
+  await assert.rejects(f.engine.addEvidence('one', { ...entry, criterionIds: ['UNKNOWN'] }), /unknown acceptance/);
+  writeFileSync(path.join(prepared.worktree!, 'value.txt'), 'supervisor integration\n');
+  const second = await f.engine.addEvidence('one', { ...entry, kind: 'integration', summary: 'Supervisor repair' }) as any;
+  assert.notEqual(first.sourceFingerprint, second.sourceFingerprint);
+  await f.engine.cancel('one'); await f.engine.addEvidence('one', { ...entry, summary: 'Post-cancellation notes' });
+  assert.equal(f.engine.store.get('one').status, 'cancelled'); assert.equal(f.engine.store.get('one').supervisorEvidence!.length, 3);
+  assert.equal(readFileSync(path.join(f.engine.store.dir('one'), first.artifact), 'utf8'), artifact);
+  assert.ok((f.engine.summary(f.engine.store.get('one')) as any).artifacts.includes(second.artifact));
+});
+
+test('legacy check results and log files are archived before a new verification clears latest results', async () => {
+  const f = await fixture(); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const task = f.engine.store.get('one'); const log = 'verify-actual-value.log';
+  writeFileSync(path.join(f.engine.store.dir('one'), log), 'legacy verification output');
+  task.checks = [{ name: 'actual-value', passed: true, exitCode: 0, log, finishedAt: new Date().toISOString() }];
+  task.verifiedFingerprint = await fingerprint(task); f.engine.store.save(task);
+  await f.engine.verify('one'); const checked = await until(f.engine, 'one', 'awaiting_review');
+  assert.equal(checked.verificationHistory!.length, 2);
+  const legacy: VerificationRun = JSON.parse(readFileSync(path.join(f.engine.store.dir('one'), checked.verificationHistory![0]!.artifact), 'utf8'));
+  assert.equal(legacy.status, 'passed'); assert.equal(readFileSync(path.join(f.engine.store.dir('one'), legacy.checks[0]!.log), 'utf8'), 'legacy verification output');
+});
+
+test('bounded revision wait wakes for the selected task, times out normally and can be cancelled independently', async () => {
+  const f = await fixture(); f.engine.create({ ...f.spec, id: 'two', branch: 'workflow/two' });
+  let woke = false;
+  const waiting = f.engine.wait(['one'], { one: f.engine.store.get('one').revision }, 1000).then(value => { woke = true; return value as any[]; });
+  f.engine.store.save(f.engine.store.get('two')); await delay(25); assert.equal(woke, false);
+  const task = f.engine.store.get('one'); task.lastError = 'visible update'; f.engine.store.save(task);
+  assert.equal((await waiting)[0]!.lastError, 'visible update');
+  const timed = await f.engine.wait(['one'], { one: task.revision }, 10) as any[]; assert.equal(timed[0]!.revision, task.revision);
+  const controller = new AbortController(); const cancelled = f.engine.wait(['one'], { one: task.revision }, 1000, controller.signal);
+  controller.abort(new Error('reader gone')); await assert.rejects(cancelled, /reader gone/);
+  assert.equal(f.engine.store.get('one').status, 'planned');
+});
+
+test('passing commands cannot grant verification if source changes during the round', async t => {
+  const f = await fixture(); t.after(() => f.engine.close()); const prepared = await f.engine.prepare('one');
+  await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  const ready = path.join(f.root, 'source-check-ready'); const release = path.join(f.root, 'source-check-release');
+  await f.engine.verify('one', { strategy: 'custom', rationale: 'Check source consistency', omittedCoverage: [], checks: [
+    { name: 'controlled', command: process.execPath, timeoutMinutes: 1, args: ['-e',
+      `const fs=require('fs'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)}))clearInterval(timer)},10)`] },
+  ] });
+  await untilFile(ready); writeFileSync(path.join(prepared.worktree!, 'value.txt'), 'changed during verification\n'); writeFileSync(release, 'finish');
+  const checked = await until(f.engine, 'one', 'awaiting_review'); assert.equal(checked.checks[0]!.passed, true);
+  assert.equal(checked.verificationHistory![0]!.status, 'failed'); assert.equal(checked.verifiedFingerprint, undefined);
+  assert.match(checked.lastError!, /Source changed during verification/);
+  await assert.rejects(f.engine.review('one', 'accept', 'Command exit alone is insufficient', [checked.checks[0]!.log]), /current source/);
 });

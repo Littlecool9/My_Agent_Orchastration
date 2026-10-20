@@ -1,9 +1,11 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { TaskSpecSchema, type Task, type TaskSpec } from './schema.js';
 
 export class Store {
+  private changes = new EventEmitter().setMaxListeners(0);
   constructor(readonly root: string) { mkdirSync(root, { recursive: true }); }
   dir(id: string): string {
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) throw new Error('Invalid task ID');
@@ -25,7 +27,12 @@ export class Store {
     task.updatedAt = new Date().toISOString(); task.revision++;
     const temp = `${this.file(task.spec.id)}.${randomUUID()}.tmp`;
     writeFileSync(temp, JSON.stringify(task, null, 2)); renameSync(temp, this.file(task.spec.id));
+    this.changes.emit('change', task.spec.id);
     return task;
+  }
+  onChange(listener: (id: string) => void): () => void {
+    this.changes.on('change', listener);
+    return () => { this.changes.off('change', listener); };
   }
   event(id: string, kind: string, detail: unknown): void {
     writeFileSync(path.join(this.dir(id), 'events.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind, detail }) + '\n', { flag: 'a' });

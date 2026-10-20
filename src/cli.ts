@@ -7,6 +7,8 @@ import { runCommand } from './process.js';
 import { serveMcp } from './mcp.js';
 import { liveProbe } from './probe.js';
 import { DEFAULT_PROVIDER } from './schema.js';
+import { parseWaitArgs, waitForTasks, WAIT_USAGE } from './wait.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
@@ -19,6 +21,29 @@ async function main(): Promise<void> {
     case 'start': { const info = await ensureDaemon(ROOT); console.log(JSON.stringify({ running: true, pid: info.pid, executionEnabled: (await rpc(info, 'workflow_config', {})).executionEnabled }, null, 2)); break; }
     case 'stop': console.log(JSON.stringify(await stopDaemon(ROOT))); break;
     case 'mcp': await serveMcp(ROOT); break;
+    case 'wait': {
+      const { ids, options } = parseWaitArgs(args); const controller = new AbortController();
+      const interrupt = () => controller.abort(new DOMException('Wait interrupted', 'AbortError'));
+      process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
+      let info: Awaited<ReturnType<typeof ensureDaemon>> | undefined;
+      try {
+        const result = await waitForTasks(ids, async (input, signal) => {
+          for (let attempt = 0; ; attempt++) {
+            signal.throwIfAborted();
+            try { info ??= await ensureDaemon(ROOT, signal); return await rpc(info, 'workflow_wait', input, signal); }
+            catch (error) {
+              signal.throwIfAborted();
+              if (attempt >= 2 || !(error instanceof TypeError || error instanceof DOMException && error.name === 'TimeoutError')) throw error;
+              info = undefined; await delay(500, undefined, { signal });
+            }
+          }
+        }, options, controller.signal);
+        console.log(JSON.stringify(result, null, 2)); if (result.reason === 'timeout') process.exitCode = 2;
+      } catch (error) {
+        if (controller.signal.aborted) process.exitCode = 130; else throw error;
+      } finally { process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt); }
+      break;
+    }
     case 'connections': {
       const cli = path.join(ROOT, 'dist/src/cli.js');
       console.log('Claude Code .mcp.json (merge the server entry; keep existing servers):\n' + JSON.stringify({ mcpServers: { 'agent-orchestrator': { command: process.execPath, args: [cli, 'mcp'] } } }, null, 2));
@@ -43,7 +68,7 @@ async function main(): Promise<void> {
       const input = JSON.parse(readFileSync(path.resolve(file), 'utf8'));
       console.log(JSON.stringify(await rpc(await ensureDaemon(ROOT), name, input), null, 2)); break;
     }
-    default: console.log('Commands: doctor | connections | start | stop | mcp | probe --provider NAME --live | call TOOL_NAME --file request.json');
+    default: console.log('Commands: doctor | connections | start | stop | mcp | probe --provider NAME --live | call TOOL_NAME --file request.json | ' + WAIT_USAGE);
   }
 }
 main().catch(error => { console.error(redact(String(error), loadEnv(ROOT))); process.exitCode = 1; });

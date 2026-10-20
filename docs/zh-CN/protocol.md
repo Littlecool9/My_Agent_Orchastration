@@ -20,6 +20,16 @@ workflow_verify 可传 selection={strategy,rationale,checks,omittedCoverage}，�
 
 workerMemoryLimitMB 是全局配置中的每 worker 提交内存上限，缺省 3072 MiB。Windows Job Object 在 OpenCode 恢复执行前绑定，普通子进程继承限制；内存/守护错误记录到 worker 工件和失败诊断。任务恢复沿用原会话与源码，不自动提高限额。
 
+## 等待、验证轮次与主控证据
+
+`workflow_wait` 仍是最多 25 秒的 revision 等待，由任务保存事件唤醒；客户端断开只取消该次读取。`node dist/src/cli.js wait <id>` 在单个 CLI 进程中衔接短等待，`--until change`、可重复的 `--after <id>=<revision>`、`--timeout-ms` 分别指定 revision 等待、重连游标和总时限。默认在任一任务需要主控介入时返回，不必等到 `accepted`。输出为 `{reason,tasks}`；总超时返回最后已知快照并以 2 退出，Ctrl+C 以 130 退出，不取消任务。
+
+每轮验证生成 `verificationRunId`、`verification-UUID.json` 和独立的 `verify-UUID-<check>.log`。`verificationHistory` 保存轮次索引；工件记录选择、计划/worker 运行身份、源码指纹、结果和最终状态（`passed`、`failed`、`stopped`、`cancelled` 或 `interrupted`）。重新验证、返工、计划修订均保留历史。清空旧格式检查结果前会归档其结果和日志；旧记录缺少可靠开始时间，归档时以记录中的完成时间代替开始时间。
+
+`workflow_verify_stop {id,reason}` 只中止验证，等待进程树退出后回到 `awaiting_review`。已完成检查保留；中断中的命令记录 `status=stopped`、`passed=false`、`exitCode=null`，不再启动后续检查。未完成源码一致性验证的轮次不能用于通过验收。停止与完成竞态时保留已完成结果，重复停止该轮无副作用。取消整个任务仍是终态。
+
+`workflow_evidence_add {id,entry}` 追加主控证据。`entry` 包含当前 `planRevision`、`kind=integration|verification|note`、摘要、非空验收项 ID 与证据引用，以及可选日志（最多 200,000 字符）。服务端记录独立工件、当前源码指纹、worker 运行身份及时间，并脱敏已配置密钥。未知验收项、旧计划版本、执行中的任务均拒绝记录。取消任务后允许追加，但不重新打开任务，也不授予独立验证通过状态。通过 `supervisorEvidence` 索引及 `workflow_artifact` 读取。
+
 ## 输出
 
 执行者最终只返回一个 JSON 对象，严格匹配 WorkerReportSchema；不接受 Markdown 包裹、普通文本或从散乱报告猜测状态。报告包括 taskId/planRevision/runId/attempt、summary、acceptanceResults、checks、changedFiles、deviations 和 blockers。

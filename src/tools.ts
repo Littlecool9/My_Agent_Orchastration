@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TaskSpecSchema, FeedbackSchema, VerificationSelectionSchema, DEFAULT_PROVIDER } from './schema.js';
+import { TaskSpecSchema, FeedbackSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, DEFAULT_PROVIDER } from './schema.js';
 import type { Engine } from './engine.js';
 import { configStatus } from './config.js';
 
@@ -14,11 +14,13 @@ export const toolDefinitions = [
   { name: 'workflow_diff', description: 'List changed files and diff stat; supervisor should read actual code in the indicated worktree.', schema: z.object({ id: z.string() }).strict(), readOnly: true },
   { name: 'workflow_artifact', description: 'Read a bounded portion of one task artifact. Read full transcripts only for a specific diagnostic need.', schema: z.object({ id: z.string(), name: z.string(), offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(20000).default(12000) }).strict(), readOnly: true },
   { name: 'workflow_verify', description: 'Run supervisor-chosen independent verification. Optional selection records strategy, rationale, commands and omittedCoverage; targeted/affected/smoke/full/custom are allowed. Omission uses planned checks. No mandatory full suite. Captures logs and source fingerprint; does not accept.', schema: z.object({ id: z.string(), selection: VerificationSelectionSchema.optional() }).strict(), readOnly: false },
+  { name: 'workflow_verify_stop', description: 'Stop only active verification and wait for its process tree to exit. Preserve round history and completed checks; return to awaiting_review. Does not cancel the task or waive acceptance checks. A completed round is unchanged.', schema: z.object({ id: z.string(), reason: z.string().trim().min(1).max(6000) }).strict(), readOnly: false },
+  { name: 'workflow_evidence_add', description: 'Append supervisor integration, external-check or review evidence with criterion IDs, current source fingerprint and optional log. Preserves prior evidence and terminal task status. This records supervisor testimony; it does not execute checks or grant verification/acceptance.', schema: z.object({ id: z.string(), entry: SupervisorEvidenceSchema }).strict(), readOnly: false },
   { name: 'workflow_review', description: 'Supervisor review. Accept requires independent checks on unchanged source. Rework requires feedback with planRevision and criterion-linked findings; continue the same worker session.', schema: z.object({ id: z.string(), decision: z.enum(['accept', 'rework']), rationale: z.string().min(1), evidence: z.array(z.string().min(1)).min(1), feedback: FeedbackSchema.optional() }).strict(), readOnly: false },
   { name: 'workflow_cancel', description: 'Stop a task and its running worker/checks. Preserves worktree, branch and evidence for inspection.', schema: z.object({ id: z.string() }).strict(), readOnly: false },
 ] as const;
 
-export async function callTool(engine: Engine, name: string, input: unknown): Promise<unknown> {
+export async function callTool(engine: Engine, name: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
   const tool = toolDefinitions.find(t => t.name === name); if (!tool) throw new Error('Unknown workflow tool');
   const args = tool.schema.parse(input) as any;
   switch (name) {
@@ -30,10 +32,12 @@ export async function callTool(engine: Engine, name: string, input: unknown): Pr
     case 'workflow_dispatch': return engine.summary(await engine.dispatch(args.id, args.feedback));
     case 'workflow_plan_update': return engine.summary(await engine.updatePlan(args.id, args.expectedPlanRevision, args.spec, args.changeReason));
     case 'workflow_status': return args.id ? engine.summary(engine.store.get(args.id)) : engine.store.all().map(t => engine.summary(t));
-    case 'workflow_wait': return engine.wait(args.ids, args.after, args.timeoutMs);
+    case 'workflow_wait': return engine.wait(args.ids, args.after, args.timeoutMs, signal);
     case 'workflow_diff': return engine.diff(args.id);
     case 'workflow_artifact': return engine.artifact(args.id, args.name, args.offset, args.length);
     case 'workflow_verify': return engine.summary(await engine.verify(args.id, args.selection));
+    case 'workflow_verify_stop': return engine.summary(await engine.stopVerification(args.id, args.reason));
+    case 'workflow_evidence_add': return engine.addEvidence(args.id, args.entry);
     case 'workflow_review': return engine.summary(await engine.review(args.id, args.decision, args.rationale, args.evidence, args.feedback));
     case 'workflow_cancel': return engine.summary(await engine.cancel(args.id));
   }

@@ -22,6 +22,16 @@ The default provider is `deepseek`. `workspaceMode` defaults to recommended `wor
 
 Global `workerMemoryLimitMB` defaults to 3072 MiB committed memory per worker. Windows attaches the Job Object before OpenCode resumes execution, and ordinary descendants inherit it. Limit/guard failures appear in worker artifacts and diagnostics. Recovery retains source/session and does not automatically raise the limit.
 
+## Waiting, verification rounds and supervisor evidence
+
+`workflow_wait` remains a bounded revision wait (maximum 25 seconds), woken by task saves. Client disconnect cancels only that read. `node dist/src/cli.js wait <id>` composes bounded reads into one blocking CLI process; `--until change`, repeated `--after <id>=<revision>`, and `--timeout-ms` select revision waiting, reconnect cursors and an overall limit. The default returns when any task needs supervisor attention, rather than waiting for `accepted`. Output is `{reason,tasks}`; timeout returns the latest known snapshot and exits 2. Ctrl+C exits 130 without cancelling work.
+
+Each verification gets a `verificationRunId`, a `verification-UUID.json` artifact and unique `verify-UUID-<check>.log` files. `verificationHistory` stores round references; artifacts preserve selection, plan/worker run identity, source fingerprints, results and final status (`passed`, `failed`, `stopped`, `cancelled` or `interrupted`). Reverification, rework and plan changes retain this history. Existing legacy check results/logs are archived before they are cleared. Legacy records have no reliable start time; their recorded finish time is used for both timestamps.
+
+`workflow_verify_stop {id,reason}` aborts only verification, waits for process-tree exit and returns the task to `awaiting_review`. Completed checks survive; an interrupted command has `status=stopped`, `passed=false` and `exitCode=null`. No later checks launch. A round without completed source validation cannot grant acceptance. A completed round wins a race with stop; repeated stops of that round are harmless. Whole-task cancellation remains terminal.
+
+`workflow_evidence_add {id,entry}` appends supervisor-supplied evidence. `entry` contains current `planRevision`, `kind=integration|verification|note`, a summary, nonempty criterion IDs and evidence references, and an optional log (at most 200,000 characters). The server records a unique artifact, current source fingerprint, worker run identity and timestamp, redacting configured secrets. Unknown criteria, stale plans and active execution are rejected. Recording is allowed after cancellation and does not reopen the task or grant independent verification. Inspect `supervisorEvidence` references and use `workflow_artifact` to read the records.
+
 ## Output
 
 The worker's final response must be a single JSON object matching `WorkerReportSchema`. Markdown wrappers, plain text and inferred statuses are rejected. Fields include `taskId`, `planRevision`, `runId`, `attempt`, `summary`, `acceptanceResults`, `checks`, `changedFiles`, `deviations` and `blockers`.

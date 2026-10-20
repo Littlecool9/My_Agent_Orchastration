@@ -53,6 +53,23 @@ API Key 只填一次，文件在：
 
 你可以直接说“按改动风险选择验证，不用跑全量”。主控通过 workflow_verify 的 selection 记录策略、理由、检查命令和 omittedCoverage；无需为一次测试选择重写整个任务计划。实现验收仍要求至少一条独立检查命令通过，也必须如实说明未覆盖范围。
 
+## 等待结果与停止验证
+
+在编排器安装目录运行：
+
+```powershell
+node dist/src/cli.js wait <task-id>
+node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeout-ms 60000
+```
+
+默认不限总时长，任一所选任务进入需要主控介入的状态时返回：待审查、返工、重规划、阻塞、验收完成、失败、取消或中断。最多支持八个任务 ID。`--until change` 等待 revision 变化；未传 `--after` 时以首次快照为基线。输出为 JSON。退出码 0 表示等待条件满足，不代表任务通过验收；总超时退出码为 2，Ctrl+C 退出码为 130，只结束等待。CLI 会重试暂时断开的读取连接，不会重新派发任务。自动唤醒主控仍需宿主接入通知。
+
+只想停止检查时，让主控调用 `workflow_verify_stop`，传入 `{id,reason}`。它等待检查进程树退出，保留已完成结果并回到 `awaiting_review`。每轮验证的独立工件和日志可在 `workflow_status` 中找到，后续验证不会覆盖旧轮次。中止的验证不满足验收要求；若该轮已经完成，停止操作保留其原结果。
+
+主控整合修改和外部补测通过 `workflow_evidence_add` 追加。`entry` 包含 `planRevision`、`kind`（`integration`、`verification` 或 `note`）、`summary`、`criterionIds`、`evidence` 和可选 `log`。记录绑定当前源码指纹，取消任务后也能追加。它保存主控提供的证据，不执行命令或将验证标为通过。
+
+仓库专用脚本优先由对应仓库维护。需要放在 Skill 旁边的本地脚本与 profile，统一存放在 `skills/orchestrate-code/repositories.local/<repository-id>/`，下设 `profile.json` 和 `scripts/`；该目录已加入 gitignore。目前 profile 由主控手动读取，尚未实现按仓库自动解析验证策略。
+
 ## 执行中断后继续
 
 先查询 workflow_status，不要重建任务或 worktree。failed / interrupted / blocked 的任务，主控需要审查已有改动，并在 workflow_dispatch 中提供匹配当前计划版本和验收项 ID 的结构化诊断反馈；继续原 session。needs_replan 则先更新计划。

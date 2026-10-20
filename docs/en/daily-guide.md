@@ -43,6 +43,23 @@ When nothing is running or verifying, run `npm run stop` followed by `npm run st
 
 Say “Choose verification based on the change risk; a full suite is not required.” The supervisor records strategy, rationale, commands and `omittedCoverage` through `workflow_verify.selection`, without rewriting the task plan. Implementation acceptance still requires at least one passing independent command and an honest account of untested scope.
 
+## Wait for a result and stop verification
+
+From the orchestrator installation, run:
+
+```powershell
+node dist/src/cli.js wait <task-id>
+node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeout-ms 60000
+```
+
+The default waits indefinitely until any selected task needs supervisor attention: review, rework, replan, a blocker, acceptance, failure, cancellation or interruption. Up to eight task IDs are supported. `--until change` waits for a revision change; without `--after`, it takes the initial snapshot as the baseline. Output is JSON. Exit 0 means the condition was reached, not that the task passed. Timeout exits 2; Ctrl+C exits 130 and only stops waiting. The CLI retries transient read connections without resubmitting work. Automatic supervisor wakeup still requires a host notification integration.
+
+Ask the supervisor to use `workflow_verify_stop` with `{id,reason}` to stop just verification. It waits for the check process tree to exit, preserves completed results and returns to `awaiting_review`. Each round has its own artifact and logs, listed by `workflow_status`; later rounds do not overwrite them. A stopped round does not satisfy verification for acceptance. If the round already finished, stopping it leaves the result unchanged.
+
+Supervisor integration repairs and external tests can be appended using `workflow_evidence_add`. Its `entry` contains `planRevision`, `kind` (`integration`, `verification` or `note`), `summary`, `criterionIds`, `evidence` and optional `log`. Records include the current source fingerprint and remain available after cancellation. This records supervisor-supplied evidence; it does not run commands or mark verification passed.
+
+Repository-specific scripts should be maintained by their owning repository. Optional local scripts and profiles alongside the Skill live under `skills/orchestrate-code/repositories.local/<repository-id>/`, with `profile.json` and `scripts/`; this directory is ignored by Git. Profile loading is currently manual. Automatic per-repository policy resolution is not implemented yet.
+
 ## Resume interrupted work
 
 Read `workflow_status` first. Do not recreate the task or worktree. For `failed`, `interrupted` or `blocked`, inspect existing changes and supply structured diagnostic feedback matching the current plan and acceptance IDs to `workflow_dispatch`. Continue the original session. For `needs_replan`, update the plan first.

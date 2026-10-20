@@ -1,13 +1,12 @@
 import path from 'node:path';
-import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
-import { setTimeout as delay } from 'node:timers/promises';
+import { readFileSync, writeFileSync, existsSync, realpathSync, renameSync, copyFileSync } from 'node:fs';
 import { Store } from './store.js';
 import { executionGuard, redact } from './config.js';
 import { prepareWorkspace, workspaceMode, workspaceKey, assertAllowedPaths, assertWorktree, fingerprint, changedFiles } from './worktree.js';
 import { runCommand, git } from './process.js';
-import type { Config, Task, TaskSpec } from './schema.js';
+import type { Config, Task, TaskSpec, VerificationRun, SupervisorEvidenceInput } from './schema.js';
 import type { Worker } from './opencode.js';
-import { TaskSpecSchema, VerificationSelectionSchema, type VerificationSelection, type Feedback } from './schema.js';
+import { TaskSpecSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, type VerificationSelection, type Feedback } from './schema.js';
 import { randomUUID } from 'node:crypto';
 import { taskContract, validateFeedback, validateReport, renderReport } from './protocol.js';
 
@@ -21,6 +20,7 @@ export class Engine {
   constructor(readonly root: string, readonly config: Config, readonly env: NodeJS.ProcessEnv, readonly worker: Worker) {
     this.store = new Store(path.join(root, '.runtime/tasks'));
     for (const t of this.store.all()) if (['running', 'verifying'].includes(t.status)) {
+      if (t.status === 'verifying') this.interruptVerification(t);
       t.status = 'interrupted'; t.lastError = 'Daemon stopped before completion. Inspect worktree and resume explicitly; no automatic replay.'; this.store.save(t);
     }
   }
@@ -84,8 +84,10 @@ export class Engine {
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached');
       if (recovery) t.recoveryAttempts = (t.recoveryAttempts ?? 0) + 1;
       delete t.recoveryPending;
+      this.archiveLegacyVerification(t);
       t.feedback = feedback ?? t.feedback; t.status = 'running'; t.attempts++; t.runId = randomUUID(); t.checks = []; delete t.verifiedFingerprint; delete t.lastError; delete t.report;
       delete t.verificationSelection;
+      delete t.verificationRunId;
       const contract = redact(JSON.stringify(taskContract(t), null, 2), this.env);
       writeFileSync(path.join(this.store.dir(id), 'contract.json'), contract);
       writeFileSync(path.join(this.store.dir(id), `contract-run-${t.runId}.json`), contract);
@@ -124,36 +126,129 @@ export class Engine {
       };
       if (t.spec.mode === 'implement' && !chosen.checks.length) throw new Error('Implementation requires at least one supervisor-selected verification command');
       await assertWorktree(t); await assertAllowedPaths(t);
-      const controller = new AbortController(); this.verifying.set(id, controller);
+      this.archiveLegacyVerification(t);
+      const controller = new AbortController();
+      const runID = randomUUID();
+      const run: VerificationRun = { id: runID, artifact: `verification-${runID}.json`, status: 'running',
+        planRevision: t.spec.planRevision, workerRunId: t.runId, startedAt: new Date().toISOString(), selection: chosen, checks: [] };
       t.status = 'verifying'; t.checks = []; delete t.verifiedFingerprint; delete t.lastError;
-      t.verificationSelection = chosen;
-      this.store.event(id, 'verification_selected', chosen); this.store.save(t);
-      const operation = this.runVerification(t, controller.signal).finally(() => { this.verifying.delete(id); this.promises.delete(id); });
+      t.verificationSelection = chosen; t.verificationRunId = run.id;
+      t.verificationHistory ??= []; t.verificationHistory.push(this.verificationReference(run));
+      this.writeVerification(id, run);
+      this.store.event(id, 'verification_selected', { ...chosen, verificationRunId: run.id, artifact: run.artifact }); this.store.save(t);
+      this.verifying.set(id, controller);
+      const operation = this.runVerification(t, run, controller.signal).finally(() => {
+        if (this.verifying.get(id) === controller) { this.verifying.delete(id); this.promises.delete(id); }
+      });
       this.promises.set(id, operation); return t;
     });
   }
-  private async runVerification(t: Task, signal: AbortSignal): Promise<void> {
+  private verificationReference(run: VerificationRun) {
+    return { id: run.id, artifact: run.artifact, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt };
+  }
+  private writeVerification(id: string, run: VerificationRun): void {
+    const file = path.join(this.store.dir(id), run.artifact); const temp = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(temp, redact(JSON.stringify(run, null, 2), this.env)); renameSync(temp, file);
+  }
+  private archiveLegacyVerification(t: Task): void {
+    if (t.verificationRunId || !t.checks.length) return;
+    const id = randomUUID(); const finishedAt = t.checks.at(-1)!.finishedAt;
+    const selection = t.verificationSelection ?? { strategy: 'planned', rationale: 'Archived legacy verification', checks: t.spec.checks, omittedCoverage: [] };
+    const run: VerificationRun = { id, artifact: `verification-${id}.json`, status: t.checks.every(c => c.passed) && t.checks.length === selection.checks.length && t.verifiedFingerprint ? 'passed' : 'failed',
+      startedAt: finishedAt, finishedAt, planRevision: t.spec.planRevision, workerRunId: t.runId, selection, checks: [], verifiedFingerprint: t.verifiedFingerprint };
+    for (const check of t.checks) {
+      const file = path.basename(check.log); const log = `verify-${id}-${file}`;
+      if (existsSync(path.join(this.store.dir(t.spec.id), file))) copyFileSync(path.join(this.store.dir(t.spec.id), file), path.join(this.store.dir(t.spec.id), log));
+      run.checks.push({ ...check, log });
+    }
+    this.writeVerification(t.spec.id, run); t.verificationHistory ??= []; t.verificationHistory.push(this.verificationReference(run));
+    t.verificationRunId = run.id;
+  }
+  private interruptVerification(t: Task): void {
+    const ref = t.verificationHistory?.find(r => r.id === t.verificationRunId);
+    if (!ref || ref.status !== 'running') return;
+    const run: VerificationRun = JSON.parse(readFileSync(path.join(this.store.dir(t.spec.id), ref.artifact), 'utf8'));
+    run.status = 'interrupted'; run.finishedAt = new Date().toISOString(); run.error = 'Daemon stopped during verification';
+    Object.assign(ref, this.verificationReference(run)); this.writeVerification(t.spec.id, run);
+    delete t.verifiedFingerprint;
+  }
+  private saveVerification(id: string, run: VerificationRun): void {
+    this.writeVerification(id, run);
+    const current = this.store.get(id);
+    if (current.verificationRunId !== run.id) return;
+    const ref = current.verificationHistory?.find(r => r.id === run.id);
+    if (ref) Object.assign(ref, this.verificationReference(run));
+    current.checks = run.checks;
+    if (run.status !== 'running') {
+      if (current.status === 'verifying') current.status = 'awaiting_review';
+      if (run.verifiedFingerprint && !['cancelled', 'interrupted'].includes(current.status)) current.verifiedFingerprint = run.verifiedFingerprint;
+      else delete current.verifiedFingerprint;
+      if (run.error) current.lastError = run.error;
+      this.store.event(id, ['passed', 'failed'].includes(run.status) ? 'verified' : `verification_${run.status}`, {
+        verificationRunId: run.id, status: run.status, artifact: run.artifact, checks: run.checks,
+      });
+    }
+    this.store.save(current);
+  }
+  private async runVerification(t: Task, run: VerificationRun, signal: AbortSignal): Promise<void> {
     const id = t.spec.id;
     try {
-      const before = await fingerprint(t);
-      for (const check of t.verificationSelection?.checks ?? t.spec.checks) {
-        const log = path.join(this.store.dir(id), `verify-${check.name}.log`);
+      run.sourceFingerprint = await fingerprint(t);
+      for (const check of run.selection.checks) {
+        if (signal.aborted) break;
+        const log = path.join(this.store.dir(id), `verify-${run.id}-${check.name}.log`);
         try {
           const result = await runCommand(check.command, check.args, t.worktree!, this.env, check.timeoutMinutes * 60000, log, signal);
-          t.checks.push({ name: check.name, exitCode: result.code, passed: result.code === 0, log: path.basename(log), finishedAt: new Date().toISOString() });
+          run.checks.push({ name: check.name, exitCode: result.code, passed: result.code === 0, status: result.code === 0 ? 'passed' : 'failed', log: path.basename(log), finishedAt: new Date().toISOString() });
         } catch (error) {
           writeFileSync(log, redact(String(error), this.env), { flag: 'a' });
-          t.checks.push({ name: check.name, exitCode: null, passed: false, log: path.basename(log), finishedAt: new Date().toISOString() });
+          run.checks.push({ name: check.name, exitCode: null, passed: false, status: signal.aborted ? 'stopped' : 'failed', log: path.basename(log), finishedAt: new Date().toISOString() });
         }
-        if (signal.aborted) return;
-        this.store.save(t); if (!t.checks.at(-1)!.passed) break;
+        this.saveVerification(id, run); if (signal.aborted || !run.checks.at(-1)!.passed) break;
       }
-      const after = await fingerprint(t);
-      if (before !== after) throw new Error('Source changed during verification; inspect changes and verify again');
-      t.verifiedFingerprint = after;
-    } catch (error) { t.lastError = redact(String(error), this.env); }
-    if (signal.aborted) return;
-    t.status = 'awaiting_review'; this.store.event(id, 'verified', t.checks); this.store.save(t);
+      if (!signal.aborted) {
+        const after = await fingerprint(t);
+        if (run.sourceFingerprint !== after) throw new Error('Source changed during verification; inspect changes and verify again');
+        if (run.checks.length === run.selection.checks.length && run.checks.every(c => c.passed)) {
+          run.status = 'passed'; run.verifiedFingerprint = after;
+        } else run.status = 'failed';
+      }
+    } catch (error) { run.status = 'failed'; run.error = redact(String(error), this.env); }
+    if (signal.aborted) {
+      const status = this.store.get(id).status;
+      run.status = status === 'cancelled' ? 'cancelled' : status === 'interrupted' ? 'interrupted' : 'stopped';
+      run.error = redact(String(signal.reason ?? 'Verification stopped'), this.env); delete run.verifiedFingerprint;
+    }
+    run.finishedAt = new Date().toISOString(); this.saveVerification(id, run);
+  }
+  async stopVerification(id: string, reason: string): Promise<Task> {
+    return this.locked(id, async () => {
+      const t = this.store.get(id);
+      // A completed round wins a race with stop; repeated stops are harmless.
+      if (t.status === 'awaiting_review' && t.verificationRunId) return t;
+      if (t.status !== 'verifying') throw new Error('Task has no active verification');
+      const controller = this.verifying.get(id);
+      if (!controller) throw new Error('Verification is not owned by this daemon');
+      if (!reason.trim()) throw new Error('Stopping verification requires a reason');
+      controller.abort(reason); await this.promises.get(id);
+      return this.store.get(id);
+    });
+  }
+  async addEvidence(id: string, input: SupervisorEvidenceInput): Promise<unknown> {
+    return this.locked(id, async () => {
+      const entry = SupervisorEvidenceSchema.parse(input); const t = this.store.get(id);
+      if (['running', 'verifying'].includes(t.status)) throw new Error('Stop active execution before recording supervisor evidence');
+      if (entry.planRevision !== t.spec.planRevision) throw new Error('Evidence refers to a stale planRevision');
+      if (entry.criterionIds.some(cid => !t.spec.acceptance.some(c => c.id === cid))) throw new Error('Evidence references an unknown acceptance criterion');
+      await assertWorktree(t);
+      const ref = { id: randomUUID(), artifact: '', kind: entry.kind, summary: redact(entry.summary, this.env),
+        planRevision: t.spec.planRevision, runId: t.runId, sourceFingerprint: await fingerprint(t), at: new Date().toISOString() };
+      ref.artifact = `evidence-${ref.id}.json`;
+      writeFileSync(path.join(this.store.dir(id), ref.artifact), redact(JSON.stringify({ ...entry, ...ref, source: 'supervisor' }, null, 2), this.env));
+      t.supervisorEvidence ??= []; t.supervisorEvidence.push(ref);
+      this.store.event(id, 'supervisor_evidence_added', ref); this.store.save(t);
+      return ref;
+    });
   }
   async review(id: string, decision: 'accept' | 'rework', rationale: string, evidence: string[], feedback?: Feedback): Promise<Task> {
     return this.locked(id, async () => {
@@ -162,9 +257,9 @@ export class Engine {
       if (decision === 'accept') {
         if (!t.report || t.report.outcome !== 'ready_for_review' || t.report.planRevision !== t.spec.planRevision) throw new Error('Acceptance requires a current structured ready_for_review report');
         await assertWorktree(t); await assertAllowedPaths(t);
-        if (!t.verifiedFingerprint || t.verifiedFingerprint !== await fingerprint(t)) throw new Error('Run independent verification on the current source before acceptance');
         const selected = t.verificationSelection?.checks ?? t.spec.checks;
-        if (t.spec.mode === 'implement' && (!selected.length || t.checks.length !== selected.length || t.checks.some((c, index) => !c.passed || c.name !== selected[index]!.name))) throw new Error('All required independent checks must pass');
+        if (t.spec.mode === 'implement' && (!selected.length || t.checks.length !== selected.length || t.checks.some((c, index) => !c.passed || c.name !== selected[index]!.name))) throw new Error('All required independent checks must pass; run independent verification before acceptance');
+        if (!t.verifiedFingerprint || t.verifiedFingerprint !== await fingerprint(t)) throw new Error('Run independent verification on the current source before acceptance');
         t.status = 'accepted';
       } else { if (!feedback) throw new Error('Rework requires criterion-linked structured feedback'); t.feedback = validateFeedback(t, feedback); t.status = 'needs_changes'; }
       t.reviews.push({ decision, rationale, evidence, at: new Date().toISOString(), planRevision: t.spec.planRevision, ...(feedback ? { feedback } : {}) }); this.store.event(id, 'review', t.reviews.at(-1)); return this.store.save(t);
@@ -182,26 +277,39 @@ export class Engine {
       if (workspaceMode(spec) !== workspaceMode(t.spec)) throw new Error('Cannot change execution identity field workspaceMode; create a distinct task instead');
       if (!changeReason.trim()) throw new Error('Plan update requires a reason');
       writeFileSync(path.join(this.store.dir(id), `plan-v${t.spec.planRevision}.json`), JSON.stringify(t.spec, null, 2));
+      this.archiveLegacyVerification(t);
       if (['failed', 'interrupted', 'blocked'].includes(t.status)) t.recoveryPending = true;
       t.spec = spec; t.status = t.worktree ? 'ready' : 'planned'; t.checks = [];
       delete t.feedback; delete t.report; delete t.verifiedFingerprint; delete t.lastError; delete t.summary;
       delete t.verificationSelection;
+      delete t.verificationRunId;
       this.store.event(id, 'plan_updated', { planRevision: spec.planRevision, changeReason }); return this.store.save(t);
     });
   }
   async cancel(id: string): Promise<Task> {
     return this.locked(id, async () => {
       const t = this.store.get(id); if (['accepted', 'cancelled'].includes(t.status)) throw new Error('Task is already terminal');
-      t.status = 'cancelled'; this.store.save(t); this.verifying.get(id)?.abort(); await this.worker.cancel(id); this.store.event(id, 'cancelled', {}); return t;
+      t.status = 'cancelled'; this.store.save(t); this.verifying.get(id)?.abort('Task cancelled'); await this.worker.cancel(id);
+      await this.promises.get(id); this.store.event(id, 'cancelled', {}); return this.store.get(id);
     });
   }
-  async wait(ids: string[], after: Record<string, number> = {}, timeoutMs = 20000): Promise<unknown> {
-    const deadline = Date.now() + Math.min(Math.max(timeoutMs, 0), 25000);
-    for (;;) {
-      const tasks = ids.map(id => this.store.get(id));
-      if (Date.now() >= deadline || tasks.some(t => t.revision > (after[t.spec.id] ?? -1))) return tasks.map(t => this.summary(t));
-      await delay(200);
-    }
+  async wait(ids: string[], after: Record<string, number> = {}, timeoutMs = 20000, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
+    const read = () => ids.map(id => this.store.get(id));
+    const changed = (tasks: Task[]) => tasks.some(t => t.revision > (after[t.spec.id] ?? -1));
+    const initial = read();
+    if (timeoutMs <= 0 || changed(initial)) return initial.map(t => this.summary(t));
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        clearTimeout(timer); unsubscribe(); signal?.removeEventListener('abort', abort);
+        if (error) reject(error); else { try { resolve(read().map(t => this.summary(t))); } catch (e) { reject(e); } }
+      };
+      const abort = () => finish(signal?.reason ?? new Error('Wait cancelled'));
+      const unsubscribe = this.store.onChange(id => { if (ids.includes(id) && changed(read())) finish(); });
+      const timer = setTimeout(() => finish(), Math.min(timeoutMs, 25000));
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+    });
   }
   summary(t: Task): unknown {
     return { id: t.spec.id, title: t.spec.title, status: t.status, revision: t.revision, planRevision: t.spec.planRevision, runId: t.runId, attempts: t.attempts,
@@ -214,9 +322,11 @@ export class Engine {
       provider: t.spec.provider, model: this.config.providers[t.spec.provider]?.model, worktree: t.worktree,
       workspaceMode: workspaceMode(t.spec), workspacePath: t.worktree, workspaceWarnings: t.workspaceWarnings ?? [],
       workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
+      verificationRunId: t.verificationRunId, verificationHistory: t.verificationHistory ?? [], supervisorEvidence: t.supervisorEvidence ?? [],
       baseCommit: t.baseCommit, sessionID: t.sessionID, summary: t.summary?.slice(0, 2400), lastError: t.lastError,
       checks: t.checks, totalTokensReported: t.totalTokens, costReported: t.cost,
-      artifacts: ['task.json', 'events.jsonl', ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : [])] };
+      artifacts: ['task.json', 'events.jsonl', ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : []),
+        ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact)] };
   }
   artifact(id: string, name: string, offset = 0, length = 12000): unknown {
     const dir = realpathSync(this.store.dir(id));
@@ -235,7 +345,7 @@ export class Engine {
     for (const t of this.store.all()) if (['running', 'verifying'].includes(t.status)) {
       t.status = 'interrupted'; t.lastError = 'Daemon stopped; inspect worktree and resume explicitly.'; this.store.save(t);
     }
-    for (const controller of this.verifying.values()) controller.abort();
+    for (const controller of this.verifying.values()) controller.abort('Daemon stopped during verification');
     await this.worker.close(); await Promise.all([...this.promises.values()]);
   }
 }

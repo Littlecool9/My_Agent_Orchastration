@@ -33,6 +33,12 @@ export const VerificationSelectionSchema = z.object({
 export type VerificationSelection = z.infer<typeof VerificationSelectionSchema>;
 
 const Identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
+export const SupervisorEvidenceSchema = z.object({
+  planRevision: z.number().int().positive(), kind: z.enum(['integration', 'verification', 'note']).default('note'),
+  summary: z.string().trim().min(1).max(6000), criterionIds: z.array(Identifier).min(1),
+  evidence: z.array(z.string().trim().min(1)).min(1), log: z.string().max(200000).optional(),
+}).strict();
+export type SupervisorEvidenceInput = z.infer<typeof SupervisorEvidenceSchema>;
 export const FindingSchema = z.object({
   criterionIds: z.array(Identifier).min(1), description: z.string().min(1),
   evidence: z.array(z.string().min(1)).min(1), requestedChange: z.string().min(1),
@@ -86,7 +92,19 @@ export const WorkerReportSchema = z.object({
 }).strict();
 export type WorkerReport = z.infer<typeof WorkerReportSchema>;
 export type Status = 'planned' | 'ready' | 'running' | 'verifying' | 'awaiting_review' | 'needs_changes' | 'needs_replan' | 'blocked' | 'accepted' | 'failed' | 'cancelled' | 'interrupted';
-export interface CheckResult { name: string; exitCode: number | null; passed: boolean; log: string; finishedAt: string }
+export interface CheckResult { name: string; exitCode: number | null; passed: boolean; log: string; finishedAt: string; status?: 'passed' | 'failed' | 'stopped' }
+export interface VerificationRunSummary {
+  id: string; status: 'running' | 'passed' | 'failed' | 'stopped' | 'cancelled' | 'interrupted';
+  artifact: string; startedAt: string; finishedAt?: string;
+}
+export interface VerificationRun extends VerificationRunSummary {
+  planRevision: number; workerRunId?: string; selection: VerificationSelection; checks: CheckResult[];
+  sourceFingerprint?: string; verifiedFingerprint?: string; error?: string;
+}
+export interface SupervisorEvidenceReference {
+  id: string; artifact: string; kind: SupervisorEvidenceInput['kind']; summary: string;
+  planRevision: number; runId?: string; sourceFingerprint: string; at: string;
+}
 export interface Review { decision: 'accept' | 'rework'; rationale: string; evidence: string[]; at: string; planRevision: number; feedback?: Feedback }
 export interface Task {
   spec: TaskSpec; status: Status; revision: number; attempts: number; createdAt: string; updatedAt: string;
@@ -98,4 +116,6 @@ export interface Task {
   lastError?: string; summary?: string; feedback?: Feedback; report?: WorkerReport; checks: CheckResult[];
   verifiedFingerprint?: string; reviews: Review[]; totalTokens: number; cost: number;
   verificationSelection?: VerificationSelection;
+  verificationRunId?: string; verificationHistory?: VerificationRunSummary[];
+  supervisorEvidence?: SupervisorEvidenceReference[];
 }

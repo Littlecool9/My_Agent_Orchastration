@@ -14,16 +14,17 @@ function infoFile(root: string): string { return path.join(runtime(root), 'daemo
 export function readInfo(root: string): DaemonInfo | undefined {
   try { return JSON.parse(readFileSync(infoFile(root), 'utf8')); } catch { return undefined; }
 }
-export async function rpc(info: DaemonInfo, name: string, args: unknown): Promise<any> {
+export async function rpc(info: DaemonInfo, name: string, args: unknown, signal?: AbortSignal): Promise<any> {
   const res = await fetch(`http://127.0.0.1:${info.port}/rpc`, { method: 'POST', headers: { Authorization: `Bearer ${info.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, args }), signal: AbortSignal.timeout(35000) });
+    body: JSON.stringify({ name, args }), signal: AbortSignal.any([AbortSignal.timeout(35000), ...(signal ? [signal] : [])]) });
   const body = await res.json() as any; if (!res.ok || body.error) throw new Error(body.error ?? `HTTP ${res.status}`); return body.result;
 }
-async function alive(info: DaemonInfo): Promise<boolean> {
-  try { await rpc(info, 'workflow_config', {}); return true; } catch { return false; }
+async function alive(info: DaemonInfo, signal?: AbortSignal): Promise<boolean> {
+  try { await rpc(info, 'workflow_config', {}, signal); return true; } catch { signal?.throwIfAborted(); return false; }
 }
-export async function ensureDaemon(root: string): Promise<DaemonInfo> {
-  const current = readInfo(root); if (current && await alive(current)) return current;
+export async function ensureDaemon(root: string, signal?: AbortSignal): Promise<DaemonInfo> {
+  signal?.throwIfAborted();
+  const current = readInfo(root); if (current && await alive(current, signal)) return current;
   const lock = path.join(runtime(root), 'launch.lock');
   let owner = false;
   try { mkdirSync(lock); owner = true; } catch { /* another client is launching */ }
@@ -32,11 +33,11 @@ export async function ensureDaemon(root: string): Promise<DaemonInfo> {
       const log = openSync(path.join(runtime(root), 'daemon.log'), 'a');
       const child = spawn(process.execPath, [path.join(root, 'dist/src/cli.js'), 'daemon'], { cwd: root, detached: true, windowsHide: true, stdio: ['ignore', log, log], env: process.env });
       let error: Error | undefined; child.on('error', e => { error = e; }); child.unref(); closeSync(log);
-      for (let n = 0; n < 120; n++) { if (error) throw error; const info = readInfo(root); if (info && info.pid === child.pid && await alive(info)) return info; await delay(250); }
+      for (let n = 0; n < 120; n++) { signal?.throwIfAborted(); if (error) throw error; const info = readInfo(root); if (info && info.pid === child.pid && await alive(info, signal)) return info; await delay(250, undefined, { signal }); }
       throw new Error('Daemon startup failed. Inspect .runtime/daemon.log');
     } finally { rmdirSync(lock); }
   }
-  for (let n = 0; n < 120; n++) { const info = readInfo(root); if (info && await alive(info)) return info; await delay(250); }
+  for (let n = 0; n < 120; n++) { signal?.throwIfAborted(); const info = readInfo(root); if (info && await alive(info, signal)) return info; await delay(250, undefined, { signal }); }
   throw new Error('Daemon launch lock timed out. If no daemon is starting, remove .runtime/launch.lock and retry.');
 }
 export async function serveDaemon(root: string): Promise<Server> {
@@ -56,11 +57,16 @@ export async function serveDaemon(root: string): Promise<Server> {
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) { res.writeHead(401).end(); return; }
     if (req.method === 'POST' && req.url === '/shutdown') { res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}'); void shutdown(); return; }
     if (req.method !== 'POST' || req.url !== '/rpc') { res.writeHead(404).end(); return; }
+    const disconnected = new AbortController();
+    const onClose = () => { if (!res.writableEnded) disconnected.abort(new Error('Client disconnected')); };
+    res.on('close', onClose);
     try {
       let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 1024 * 1024) throw new Error('Request exceeds 1 MB'); }
-      const request = JSON.parse(body); const result = await callTool(engine, request.name, request.args);
+      const request = JSON.parse(body); const result = await callTool(engine, request.name, request.args, disconnected.signal);
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(redact(JSON.stringify({ result }), env));
-    } catch (error) { res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: redact(String(error), env) })); }
+    } catch (error) {
+      if (!res.destroyed) res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: redact(String(error), env) }));
+    } finally { res.off('close', onClose); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No daemon port');
