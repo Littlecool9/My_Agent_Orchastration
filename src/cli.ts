@@ -9,10 +9,15 @@ import { liveProbe } from './probe.js';
 import { DEFAULT_PROVIDER } from './schema.js';
 import { parseWaitArgs, waitForTasks, WAIT_USAGE } from './wait.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { checkSetup } from './setup-check.js';
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   switch (command) {
+    case 'setup-check': {
+      if (args.length !== 2 || args[0] !== '--provider') throw new Error('Usage: setup-check --provider NAME');
+      console.log(JSON.stringify(await checkSetup(ROOT, args[1]!), null, 2)); break;
+    }
     case 'probe': {
       if (args[0] !== '--provider' || !args[1] || args.some((x, i) => i > 1 && x !== '--live')) throw new Error('Usage: probe --provider kimi|deepseek --live');
       console.log(JSON.stringify(await liveProbe(ROOT, args[1], args.includes('--live')), null, 2)); break;
@@ -68,7 +73,7 @@ async function main(): Promise<void> {
       const input = JSON.parse(readFileSync(path.resolve(file), 'utf8'));
       console.log(JSON.stringify(await rpc(await ensureDaemon(ROOT), name, input), null, 2)); break;
     }
-    default: console.log('Commands: doctor | connections | start | stop | mcp | probe --provider NAME --live | call TOOL_NAME --file request.json | ' + WAIT_USAGE);
+    default: console.log('Commands: doctor | setup-check --provider NAME | connections | start | stop | mcp | probe --provider NAME --live | call TOOL_NAME --file request.json | ' + WAIT_USAGE);
   }
 }
 main().catch(error => { console.error(redact(String(error), loadEnv(ROOT))); process.exitCode = 1; });

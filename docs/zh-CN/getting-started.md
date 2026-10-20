@@ -8,7 +8,32 @@
 
 ## 本地安装
 
-在仓库根目录运行：
+在仓库根目录启动安装向导，也可使用 `npm run setup`：
+
+```powershell
+.\setup.ps1
+```
+
+选择 `claude`、`codex`、`both` 或 `none`（仅后端），再选择 worker 供应商。安装器安装包含 OpenCode 的 npm 依赖、编译后端、生成通用接入文件、检查所选 Key，并安装用户级 Skill/MCP。缺少 Key 时隐藏输入并保存到 `.env.local`。已有非空 Key、工作流配置及本地项目 profile 均保留。Node.js、Git 和主控客户端需要预装；安装器不安装 Node。
+
+非交互安装前，在 `.env.local` 或环境变量中提供 Key；不要把 Key 放进命令行参数：
+
+```powershell
+npm run setup -- --client codex --provider deepseek --non-interactive
+npm run setup -- --client both --dry-run
+```
+
+`--dry-run` 不写文件、不运行客户端命令，只展示目标位置；MCP 冲突及 Key 是否存在在正式安装时检查。失败或更新后可以重跑。若 daemon 正在运行，先等待所有执行/验证任务结束，再运行 `npm run stop`，然后安装，避免运行中替换依赖。相同 MCP 条目保留，安装目录移动后可以修复本安装管理的条目；遇到非本安装管理的 Skill/MCP、冲突或另一份仍存在的安装则明确报错。替换已管理的 MCP 注册失败时尝试恢复旧条目，修复原因后重跑。
+
+本地检查会在 Windows Job Object 监护下运行 OpenCode，并完成 MCP 握手及工具列表检查，不请求模型、不启动 daemon、不创建项目 profile。客户端账号加载仍需新开会话检查。修改配置后可单独运行：
+
+```powershell
+npm run setup:check -- --provider deepseek
+```
+
+选择 `kimi` 仅配置和检查对应 Key，不改变新任务默认供应商；使用时需明确指定 Kimi。endpoint/model 从下文的有效工作流配置读取。项目示例只通过[示例说明](../../examples/README.md)中的独立命令生成。
+
+手动安装后端时运行：
 
 ```powershell
 npm ci
@@ -17,7 +42,7 @@ node scripts/prepare-integrations.mjs
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-准备脚本根据公共 Skill 更新 Claude 版本，将机器专用 MCP 配置和本地化任务示例写入已忽略的 `integrations/local/`，不安装客户端设置、不启动任务。移动安装目录或修改公共 Skill 后重新运行；路径变化时还需更新客户端注册的连接。
+准备脚本根据公共 Skill 更新 Claude 版本，仅将机器专用 MCP 配置写入已忽略的 `integrations/local/`；不读取或生成项目任务示例、不安装客户端设置、不启动任务。修改公共 Skill 后重新生成；移动安装目录后重跑 setup 更新已管理的客户端连接。
 
 在本地编辑 `.env.local`：
 
@@ -81,7 +106,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 
 ## 接入 Codex
 
-将 `npm run connections` 输出或 `integrations/local/codex.mcp.toml` 生成的 `[mcp_servers.agent-orchestrator]` 表合并到 MCP 配置，保留其他项。把整个 `skills/orchestrate-code/` 复制到 `~/.codex/skills/orchestrate-code/`。
+统一安装已自动完成此步骤。后端准备完成后，如仅安装客户端接入：
+
+```powershell
+npm run install:codex
+npm run install:codex -- --dry-run
+```
+
+脚本使用 `codex mcp add` 注册连接，将 `SKILL.md` 与 `agents/openai.yaml` 安装到当前官方文档中的用户目录 `~/.agents/skills/orchestrate-code/`，不复制源目录内的 `repositories.local/` 数据。若旧路径 `~/.codex/skills/orchestrate-code/`（或 `CODEX_HOME` 下）存在副本，需先移出 Skill 搜索路径；安装器会拒绝制造重复副本。参见[官方 Skill 路径](https://learn.chatgpt.com/docs/build-skills)与 [MCP 配置](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
+
+手动接入时，将 `npm run connections` 或 `integrations/local/codex.mcp.toml` 中的 `[mcp_servers.agent-orchestrator]` 表合并到用户 MCP 配置，保留其他项，再将分发用的 Skill 文件复制到 `~/.agents/skills/orchestrate-code/`。`CODEX_HOME` 决定客户端配置目录，新用户级 Skill 仍位于 `~/.agents/skills/`。
 
 调用元数据设置了 `allow_implicit_invocation: false`，通过 `$orchestrate-code` 显式调用。重新打开会话，检查工具是否可见。适配提供标准 MCP 配置和 Skill 元数据；真实任务前仍需在自己的客户端和账号验证接入。
 

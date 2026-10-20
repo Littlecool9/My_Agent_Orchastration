@@ -29,22 +29,27 @@ Claude Code / Codex supervisor
 Install Node.js 22+, Git, and your supervisor client. From this repository's root:
 
 ```powershell
-npm ci
-npm run build
-node scripts/prepare-integrations.mjs
-if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
-npm run doctor
+.\setup.ps1
 ```
 
-Fill in the selected provider's key in `.env.local`. Review `executionEnabled` in the effective configuration before dispatching. The checked-in file currently sets it to `true`; adding a key, starting the daemon or creating a task does not dispatch a task by itself.
+The wizard selects Claude Code, Codex or both; installs backend dependencies (including OpenCode), builds, configures the selected API key with hidden input, installs user Skills and registers MCP. It checks the Windows memory guard and MCP handshake without calling a model. Node is checked, never installed. Project examples and repository profiles are separate. You can also use `npm run setup`.
 
-For Claude Code, run `npm run install:claude` once, reopen Claude in your target repository, and invoke:
+For repeatable setup or a preview:
+
+```powershell
+npm run setup -- --client codex --provider deepseek --non-interactive
+npm run setup -- --client both --dry-run
+```
+
+Non-interactive setup requires the selected key in `.env.local` or the environment. Review `executionEnabled` before dispatching; the checked-in file sets it to `true`. Setup makes no model request and dispatches no task.
+
+After setup, reopen Claude Code in your target repository and invoke:
 
 ```text
 /orchestrate-code Implement <goal> from <baseline>. Delegate implementation to DeepSeek, review the diff, and independently verify the result. Do not commit or push.
 ```
 
-For Codex, run `npm run connections`, merge the printed MCP table into your configuration, and install `skills/orchestrate-code/`. Invoke `$orchestrate-code` explicitly. See [installation and configuration](docs/en/getting-started.md) for full setup and optional live validation.
+In Codex, invoke `$orchestrate-code` explicitly. See [installation and configuration](docs/en/getting-started.md) for manual setup, repair, conflicts and optional live validation.
 
 ## Documentation
 

@@ -29,22 +29,27 @@ Claude Code / Codex 主控
 安装 Node.js 22+、Git 和主控客户端，在仓库根目录运行：
 
 ```powershell
-npm ci
-npm run build
-node scripts/prepare-integrations.mjs
-if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
-npm run doctor
+.\setup.ps1
 ```
 
-在 `.env.local` 填写所选供应商的 Key。派发前检查有效配置的 `executionEnabled`。当前仓库文件为 `true`；添加 Key、启动 daemon 或创建任务记录本身不会派发任务。
+向导选择 Claude Code、Codex 或两者，安装后端依赖（包含 OpenCode）、编译，通过隐藏输入配置所选供应商的 API Key，安装用户级 Skill 并注册 MCP。最后检查 Windows 内存监护和 MCP 握手，不请求模型。Node 仅检查、不安装。项目示例和 repository profile 独立处理。也可运行 `npm run setup`。
 
-Claude Code 首次运行 `npm run install:claude`，在要开发的仓库重新打开 Claude，然后输入：
+带参数安装或预览：
+
+```powershell
+npm run setup -- --client codex --provider deepseek --non-interactive
+npm run setup -- --client both --dry-run
+```
+
+非交互安装需要事先在 `.env.local` 或环境变量中提供所选 Key。派发前检查有效配置的 `executionEnabled`，当前仓库文件为 `true`。安装不调用模型、不派发任务。
+
+安装完成后，在要开发的仓库重新打开 Claude，然后输入：
 
 ```text
 /orchestrate-code 从 <基线> 实现 <目标>。把实现交给 DeepSeek，你审查 diff 并独立验证结果。不要 commit 或 push。
 ```
 
-Codex 用户运行 `npm run connections`，将输出的 MCP 表合并到个人配置，安装 `skills/orchestrate-code/`，再通过 `$orchestrate-code` 显式调用。完整安装和可选真实验证见[安装与配置](docs/zh-CN/getting-started.md)。
+Codex 用户通过 `$orchestrate-code` 显式调用。手动安装、修复、冲突处理和可选真实验证见[安装与配置](docs/zh-CN/getting-started.md)。
 
 ## 文档
 

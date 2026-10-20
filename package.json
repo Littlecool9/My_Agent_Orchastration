@@ -5,12 +5,16 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "setup:check": "node dist/src/cli.js setup-check",
+    "prepare:example:alpha": "node scripts/prepare-alpha-example.mjs",
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
     "doctor": "node dist/src/cli.js doctor",
     "probe": "node dist/src/cli.js probe",
     "connections": "node dist/src/cli.js connections",
     "install:claude": "node scripts/install-claude.mjs",
+    "install:codex": "node scripts/install-codex.mjs",
     "mcp": "node dist/src/cli.js mcp",
     "start": "node dist/src/cli.js start",
     "stop": "node dist/src/cli.js stop"

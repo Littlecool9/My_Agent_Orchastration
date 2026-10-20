@@ -20,14 +20,14 @@ test('portable skill metadata and explicit-only client variants stay consistent'
   assert.deepEqual(connection.mcpServers['agent-orchestrator'].args, ['C:/path/to/agent-orchestrator/dist/src/cli.js', 'mcp']);
 });
 
-test('integration preparation localizes a clean installation without rewriting the shared task example or local task settings', () => {
+test('generic integration preparation does not read or generate project examples', () => {
   const scratch = path.join(ROOT, 'work/workflow-tests'); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(path.join(scratch, 'integrations-'));
   for (const dir of ['scripts', 'skills', 'examples']) mkdirSync(path.join(root, dir), { recursive: true });
   cpSync(path.join(ROOT, 'scripts/prepare-integrations.mjs'), path.join(root, 'scripts/prepare-integrations.mjs'));
   cpSync(path.join(ROOT, 'skills/orchestrate-code'), path.join(root, 'skills/orchestrate-code'), { recursive: true });
   const template = readFileSync(path.join(ROOT, 'examples/alpha-244.json'), 'utf8');
-  writeFileSync(path.join(root, 'examples/alpha-244.json'), template);
+  writeFileSync(path.join(root, 'examples/alpha-244.json'), 'not even valid JSON');
   const prepare = () => execFileSync(process.execPath, [path.join(root, 'scripts/prepare-integrations.mjs')], { cwd: root, windowsHide: true });
   prepare();
   const local = path.join(root, 'integrations/local');
@@ -36,6 +36,25 @@ test('integration preparation localizes a clean installation without rewriting t
   assert.deepEqual(connection.mcpServers['agent-orchestrator'].args, [path.join(root, 'dist/src/cli.js'), 'mcp']);
   assert.ok(readFileSync(path.join(local, 'codex.mcp.toml'), 'utf8').includes(path.join(root, 'dist/src/cli.js').replaceAll('\\', '/')));
   assert.equal(existsSync(path.join(root, 'integrations/claude.mcp.json')), false);
+  assert.equal(existsSync(path.join(local, 'alpha-244.json')), false);
+  writeFileSync(path.join(local, 'alpha-244.json'), template);
+  prepare();
+  assert.equal(readFileSync(path.join(local, 'alpha-244.json'), 'utf8'), template);
+  assert.equal(readFileSync(path.join(root, 'examples/alpha-244.json'), 'utf8'), 'not even valid JSON');
+  assert.equal(readFileSync(path.join(root, 'integrations/claude/skills/orchestrate-code/SKILL.md'), 'utf8'),
+    readFileSync(path.join(root, 'skills/orchestrate-code/SKILL.md'), 'utf8').replace('---\nname:', '---\ndisable-model-invocation: true\nname:'));
+});
+
+test('explicit alpha example preparation preserves reviewed local task settings', () => {
+  const scratch = path.join(ROOT, 'work/workflow-tests'); mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(path.join(scratch, 'example-'));
+  for (const dir of ['scripts', 'examples']) mkdirSync(path.join(root, dir), { recursive: true });
+  cpSync(path.join(ROOT, 'scripts/prepare-alpha-example.mjs'), path.join(root, 'scripts/prepare-alpha-example.mjs'));
+  const template = readFileSync(path.join(ROOT, 'examples/alpha-244.json'), 'utf8');
+  writeFileSync(path.join(root, 'examples/alpha-244.json'), template);
+  const prepare = () => execFileSync(process.execPath, [path.join(root, 'scripts/prepare-alpha-example.mjs')], { cwd: root, windowsHide: true });
+  prepare();
+  const local = path.join(root, 'integrations/local');
   const taskFile = path.join(local, 'alpha-244.json');
   const task = JSON.parse(readFileSync(taskFile, 'utf8'));
   for (const check of [...task.spec.checks, ...task.spec.workerChecks]) {
@@ -49,6 +68,4 @@ test('integration preparation localizes a clean installation without rewriting t
   assert.equal(regenerated.spec.repository, task.spec.repository);
   assert.equal(regenerated.spec.goal, task.spec.goal);
   assert.equal(readFileSync(path.join(root, 'examples/alpha-244.json'), 'utf8'), template);
-  assert.equal(readFileSync(path.join(root, 'integrations/claude/skills/orchestrate-code/SKILL.md'), 'utf8'),
-    readFileSync(path.join(root, 'skills/orchestrate-code/SKILL.md'), 'utf8').replace('---\nname:', '---\ndisable-model-invocation: true\nname:'));
 });

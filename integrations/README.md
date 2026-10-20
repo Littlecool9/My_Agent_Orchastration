@@ -15,13 +15,13 @@ From the installation root / 在安装根目录运行：
 node scripts/prepare-integrations.mjs
 ```
 
-This refreshes the Claude Skill, generates `local/claude.mcp.json` and `local/codex.mcp.toml` with actual Node/installation paths, and localizes the alpha draft's check-script paths in `local/alpha-244.json`. Existing local task settings, including your repository path, are retained. A fresh draft contains a placeholder repository path you must edit before use. The tracked example is never rewritten.
+This refreshes the Claude Skill and generates `local/claude.mcp.json` and `local/codex.mcp.toml` with actual Node/installation paths. It never reads or generates project task examples. Use the separate [example preparation command](../examples/README.md) when needed.
 
-脚本更新 Claude Skill，按当前 Node 与安装目录生成本地 MCP 文件，并将 alpha 草案中的检查脚本路径本地化。已有本地任务设置（包括仓库路径）会保留；首次生成的仓库路径是占位值，使用前必须修改。仓库内示例不会被重写。
+脚本更新 Claude Skill，按当前 Node 与安装目录生成本地 MCP 文件，不读取或生成项目任务示例。需要示例时使用[独立示例命令](../examples/README.md)。
 
-It does not install client settings or start workers. Use `npm run install:claude` for user-level Claude installation, or merge `npm run connections` output manually. Template files use placeholder paths; do not register them unchanged. Rerun preparation after moving the installation, then update any previously registered client paths.
+It does not install client settings or start workers. Use `npm run setup` for the full installer, `npm run install:claude` / `npm run install:codex` for only user-level client integration, or merge `npm run connections` output manually. Both client installers support `--dry-run` and preserve matching registrations. Template files use placeholder paths; do not register them unchanged. Rerun setup after moving the installation to update managed client paths.
 
-它不安装客户端设置，也不启动 worker。Claude 用户级安装使用 `npm run install:claude`；也可手动合并 `npm run connections` 输出。模板含占位路径，不可原样注册。移动目录后重新生成，并更新已注册的客户端路径。
+它不安装客户端设置，也不启动 worker。完整安装使用 `npm run setup`；仅用户级接入使用 `npm run install:claude` 或 `npm run install:codex`，均支持 `--dry-run` 并保留相同注册；也可手动合并 `npm run connections` 输出。模板含占位路径，不可原样注册。移动目录后重新运行 setup 更新已管理的连接。
 
 Edit `skills/orchestrate-code/SKILL.md` as the source of supervisor instructions, then regenerate the Claude variant. Keep both Skill directories in place: clients load their frontmatter and metadata directly. No API keys belong in MCP files.
 

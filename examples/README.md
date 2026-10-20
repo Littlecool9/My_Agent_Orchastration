@@ -18,12 +18,12 @@ It is specific to the alpha prefab project and external issues #244/#230, with W
 
 ## Use a local copy / 使用本地副本
 
-1. Run `node scripts/prepare-integrations.mjs` from the installation root.
+1. Run `npm run prepare:example:alpha` (or `node scripts/prepare-alpha-example.mjs`) from the installation root. General setup and integration preparation never generate this example.
 2. Edit the generated `integrations/local/alpha-244.json`: set `spec.repository` to your actual alpha checkout. Check-script paths already point to this installation.
 3. Have the supervisor reread current issues, repository rules, prerequisites and acceptance criteria. Adapt the contract and verification scope to the actual task.
 4. Only after explicitly starting this work, let the supervisor create, prepare and dispatch the task.
 
-在安装根目录生成后，编辑 `integrations/local/alpha-244.json` 中的实际仓库路径；检查脚本路径已指向本机安装。让主控重新读取当前 issue、仓库规则、依赖和验收要求，再按实际任务调整契约与验证范围。明确开工后才创建、准备和派发。
+在安装根目录单独运行 `npm run prepare:example:alpha`，编辑 `integrations/local/alpha-244.json` 中的实际仓库路径；检查脚本路径已指向本机安装。通用 setup 和接入准备不生成此示例。让主控重新读取当前 issue、仓库规则、依赖和验收要求，再按实际任务调整契约与验证范围。明确开工后才创建、准备和派发。
 
 The local copy is ignored by Git. Regeneration retains its task settings while refreshing check-script paths. To design a different task, use a different task ID and review every project-specific assumption; do not dispatch the bundled draft unchanged.
 

@@ -8,7 +8,32 @@ Use Windows, Node.js 22+ and Git. Install Claude Code or Codex as your superviso
 
 ## Install locally
 
-From the repository root:
+From the repository root, start the setup wizard (or use `npm run setup`):
+
+```powershell
+.\setup.ps1
+```
+
+Choose `claude`, `codex`, `both`, or `none` (backend only), then the worker provider. Setup installs npm dependencies including OpenCode, builds the backend, prepares generic integrations, checks the selected key and installs user-level Skills/MCP. Missing keys are entered with hidden input and saved in `.env.local`. Existing nonempty keys, workflow configuration and local project profiles are preserved. Node.js, Git and supervisor clients must already be installed; Node is never installed by setup.
+
+For unattended setup, provide the key in `.env.local` or the environment first; do not put it in command-line arguments:
+
+```powershell
+npm run setup -- --client codex --provider deepseek --non-interactive
+npm run setup -- --client both --dry-run
+```
+
+`--dry-run` writes no files and runs no client commands. It prints destinations; MCP conflicts and key presence are checked during real installation. Setup can be rerun after failures or updates. If the daemon is running, wait until no task is running/verifying, then run `npm run stop` before setup replaces dependencies. Matching MCP entries are retained; managed entries can be repaired after moving the installation. Unmanaged or conflicting Skills/MCP and another live installation are reported instead of overwritten. Registration failures attempt to restore a replaced managed MCP entry; correct the problem and rerun setup.
+
+The local check runs OpenCode under the Windows Job Object guard and performs an MCP handshake/tool listing. It makes no model request, starts no daemon and creates no project profile. Client account loading still needs a new client session. For a standalone check after editing settings:
+
+```powershell
+npm run setup:check -- --provider deepseek
+```
+
+Choosing `kimi` configures/checks its key; it does not change the default provider for new tasks. Explicitly request Kimi when using that provider. Endpoint/model settings are read from the effective workflow config described below. Project examples are generated only by their separate commands in [examples](../../examples/README.md).
+
+For manual backend installation:
 
 ```powershell
 npm ci
@@ -17,7 +42,7 @@ node scripts/prepare-integrations.mjs
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-The preparation script updates the Claude Skill derived from the shared Skill and writes machine-specific MCP connections and a localized task example to the ignored `integrations/local/` directory. It does not install client settings or start tasks. Rerun after moving the installation or changing the shared Skill; refresh registered client paths if the installation moved.
+The preparation script updates the Claude Skill derived from the shared Skill and writes only machine-specific MCP connections to the ignored `integrations/local/` directory. It never reads or generates project task examples, installs client settings, or starts tasks. Rerun after changing the shared Skill. After moving the installation, rerun setup to refresh managed client paths.
 
 Edit `.env.local` locally:
 
@@ -81,7 +106,16 @@ The temporary plugin entry is `/agent-orchestrator:orchestrate-code`.
 
 ## Connect Codex
 
-Merge the `[mcp_servers.agent-orchestrator]` table printed by `npm run connections`, or generated in `integrations/local/codex.mcp.toml`, into your MCP configuration, preserving other entries. Copy the complete `skills/orchestrate-code/` directory to `~/.codex/skills/orchestrate-code/`.
+Setup handles this automatically. To install only the client integration after preparing the backend:
+
+```powershell
+npm run install:codex
+npm run install:codex -- --dry-run
+```
+
+This uses `codex mcp add` and installs `SKILL.md` plus `agents/openai.yaml` at `~/.agents/skills/orchestrate-code/`, the current documented user location. Local `repositories.local/` data is never copied from the source. If an older copy exists at `~/.codex/skills/orchestrate-code/` (or under `CODEX_HOME`), move it outside the skill search path first; setup refuses to create duplicates. See [official Skill locations](https://learn.chatgpt.com/docs/build-skills) and [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
+For manual setup, merge the `[mcp_servers.agent-orchestrator]` table from `npm run connections` or `integrations/local/codex.mcp.toml` into your user MCP config, preserving other entries, then copy the distributed Skill files to `~/.agents/skills/orchestrate-code/`. `CODEX_HOME` selects the client configuration directory; the new user Skill location stays under `~/.agents/skills/`.
 
 Invocation metadata sets `allow_implicit_invocation: false`; call `$orchestrate-code` explicitly. Reopen the session and check that tools are visible. This adapter provides standard MCP configuration and Skill metadata; validate your own client/account connection before real tasks.
 
