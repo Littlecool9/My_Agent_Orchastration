@@ -1,48 +1,43 @@
-> 当前默认启动方式是项目目录 wt → claude → /orchestrate-code。本文保留状态、恢复和多任务等详细说明；旧的临时插件启动方式仅供排错。日常使用请看 DAILY-GUIDE.md。
+# 进阶使用指南
 
-# 日常使用指南
+[English](../en/advanced-guide.md) | [文档目录](README.md)
 
 你日常只和 Claude 主控对话：说明目标、回答关键问题、审查结果。Claude 负责生成任务契约、调用 OpenCode、安排返工和验收；你不需要打开 OpenCode 窗口，也不需要自己填写 JSON。
 
-本文按已完成首次接入、API 探针通过且你已授权实际执行的状态介绍。第一次使用先看 [首次验证指南](START-VERIFY.md)。目前交付文件的 executionEnabled 仍默认 false；阅读本指南不会开启它或启动 #244。
+本文按已完成首次接入、API 探针通过且你已授权实际执行的状态介绍。第一次使用先看 [首次验证指南](getting-started.md)。以有效配置和 workflow_config 的运行值为准；阅读本文或创建任务记录不会派发任务。
 
 ## 1. 每次怎么打开
 
-在 PowerShell 中运行以下命令，最后的路径换成你今天要工作的项目：
+完成[安装与配置](getting-started.md)中的用户级接入后，在开发仓库打开终端，运行 `claude`，再使用 `/orchestrate-code`。Windows Terminal 用户可在资源管理器地址栏输入 `wt`。首次连接异常时用 `/mcp` 检查 `agent-orchestrator`。普通聊天不会自动委派。
+
+| 接入方式 | 入口 |
+|---|---|
+| Claude 用户级或项目级 Skill | `/orchestrate-code` |
+| 临时加载的 Claude 插件（排错） | `/agent-orchestrator:orchestrate-code` |
+| Codex MCP 和 Skill | `$orchestrate-code` |
+
+临时加载插件时，在工作流安装目录运行：
 
 ```powershell
-Set-Location -LiteralPath 'D:\desktop\programming\personal-projects\agents-related\agent-orchestrator'
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.ps1 -ProjectPath 'D:\desktop\programming\C\Digipen\GAM550\alpha'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.ps1 -ProjectPath C:/path/to/your-project
 ```
 
-这个方式只为本次 Claude 会话加载工作流插件和 MCP。继续使用原来的 Claude 模型和订阅登录。连接正常时不用每天重装依赖、运行探针或单独启动 OpenCode；首次调用工作流工具时会自动连接或启动调度后台。
-
-首次启动或连接异常时，在 Claude 中输入 `/mcp`，确认 agent-orchestrator 已连接。工作流是显式启用的，打开这个会话不代表每个普通问题都会交给执行 agent。
-
-不同安装方式的入口如下，选与你实际使用方式对应的一行：
-
-| 使用方式 | 指令入口 |
-|---|---|
-| 上面脚本临时加载的 Claude 插件 | `/agent-orchestrator:orchestrate-code` |
-| 自己复制到 `.claude/skills/` 的独立技能 | `/orchestrate-code` |
-| 已配置 MCP 和 Skill 的 Codex 桌面端 | `$orchestrate-code` |
-
-后面的例子采用第一种方式。Codex 的配置步骤见 [README](README.md#接入-codex-桌面端)；其真实账户接入仍需要你在该客户端首次确认。
-
 ## 2. 怎么下发一个任务
+
+默认执行侧为 DeepSeek；workerChecks 仅增量，checks 由主控按风险选择执行。worktree 推荐但不强制，branch/current 也受支持。
 
 最实用的信息是：目标、基线、范围、验收标准，以及是否允许 commit/push。模型选择可以明确写 Kimi 或 DeepSeek。没必要把所有实现步骤都替主控写好。
 
 可直接套用：
 
 ```text
-/agent-orchestrator:orchestrate-code
+/orchestrate-code
 处理 <仓库及 issue / 功能目标>。
 基线用 <origin/master 或明确的功能分支>，先确认所需基础代码存在。
-你负责规划和独立验收，把主要实现交给 Kimi K3。
+你负责规划和独立验收，把主要实现交给默认 DeepSeek。
 范围：<要做什么；明确不做什么>。
 验收：<可观察的结果、应运行的构建和测试>。
-使用独立 worktree 和 build 目录；遵守对应 AGENTS.md。
+推荐独立 worktree，也可选择 branch/current；直接修改主分支先展示警告。按工作目录安排 build 目录；遵守对应 AGENTS.md。
 除关键产品、架构或范围决策外自行推进，常规失败自行修复或派回返工。
 完成后中文汇总实际结果、风险和需要我审核的设计决定。
 不要 commit、push、创建 PR 或关闭 issue。
@@ -53,28 +48,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 **#244 的日常启动示例**，只在你决定真正开始它时发送：
 
 ```text
-/agent-orchestrator:orchestrate-code
-开始 alpha #244，使用 examples/alpha-244.json 的任务草案。
+/orchestrate-code
+开始 alpha #244，使用 integrations/local/alpha-244.json 的任务草案。
 主控先核对最新 #244/#230，fetch 后从最新 origin/master 创建独立 worktree，记录实际基准提交。
 在该 worktree 读取适用的 AGENTS.md，并把最终计划写成带版本的任务契约。
-交给 Kimi K3 实现，只在关键决策时问我。
-你独立审查代码并验证 Debug/Release 构建和全部测试；不通过就派回返工。
+交给默认 DeepSeek 实现，只在关键决策时问我。
+你独立审查代码，按风险选择 Debug/Release、目标回归或全量验证并说明未覆盖范围；不通过就派回返工。
 不要 commit、push、创建 PR 或关闭 issue。
 ```
 
-上述 examples 文件实际位于本工作流文件夹，不在 alpha 根目录。若主控找不到，提供完整路径：
-`D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/examples/alpha-244.json`。
+上述本地示例位于工作流安装目录，不在 alpha 根目录。若主控找不到，提供完整路径：
+`<工作流安装目录>/integrations/local/alpha-244.json`（先生成并填写本地仓库路径，见[示例说明](../../examples/README.md)）。
 
 ## 3. 一个 milestone 怎么下发
 
 ```text
-/agent-orchestrator:orchestrate-code
+/orchestrate-code
 处理 <milestone 名称> 中的 issues <编号列表>，基线为 <分支>。
 先调查依赖、适用的 AGENTS.md 和验收要求，形成分阶段计划。
 独立任务才并行；有依赖的任务先确定包含前置代码的基线。
-你负责总体设计、任务契约和独立验收；执行侧用 Kimi K3。
+你负责总体设计、任务契约和独立验收；执行侧默认 DeepSeek。
 默认自行执行和返工，只把关键决策集中问我。
-每个任务使用独立 worktree/build；最后验证组合结果。
+并行任务使用不同目录（推荐 worktree）；同目录分支任务串行。worker 只跑增量测试，主控自主选择独立及组合验证范围。
 不要 push。最后按 issue、分支、测试结果、风险与待审核设计决定汇总。
 ```
 
@@ -115,7 +110,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 | `accepted` | 主控已完成该任务验收 | 审查最终交付；不代表已 commit/push |
 | `cancelled` | 该任务已被取消 | 保留文件；当前实现不直接恢复 cancelled 任务 |
 
-默认每个任务最多派发 3 次，包括返工和中断后的恢复；这是派发次数，不是执行者每次内部只能修复 3 次。达到上限时主控应分析问题、必要时接管局部修复，不能盲目重试。
+主控可反复检查、验证和要求返工，直到满足验收条件，正常返工不限轮数。maxAttempts 默认 5，仅限制 failed/interrupted/blocked 后的累计恢复派发次数，不包含首次执行和正常返工。每次恢复需提供结构化诊断反馈；修改计划、正常完成和重启都不清零恢复计数。达到恢复上限时主控应分析问题、必要时接管局部修复，不能重建相同任务绕过预算。workflow_status 用 attempts 记录总轮次，recoveryAttempts/recoveryAttemptLimit/remainingRecoveryAttempts 记录异常恢复预算；旧任务缺少恢复计数时从 0 开始记录，历史轮次保留。
 
 ## 6. 下班、关闭窗口和第二天继续
 
@@ -127,12 +122,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 npm run stop
 ```
 
-它会停止当前后台执行并保留源码和记录，不回滚代码；下次需由主控检查后恢复，重派会消耗一次尝试。后台关闭后，下一次工作流调用仍可能自动启动它。若希望持续禁止新的执行，将有效配置中的 executionEnabled 改为 false，并确保后台已停止或已重启加载新配置。
+它会停止当前后台执行并保留源码和记录，不回滚代码；下次需由主控检查后恢复，重派会消耗一次异常恢复额度。后台关闭后，下一次工作流调用仍可能自动启动它。若希望持续禁止新的执行，将有效配置中的 executionEnabled 改为 false，并确保后台已停止或已重启加载新配置。
 
 **第二天恢复：** 用第 1 节的命令重新打开 Claude，然后发送：
 
 ```text
-/agent-orchestrator:orchestrate-code
+/orchestrate-code
 恢复之前的任务 <task-id>；如果我没记住 ID，先列出现有任务。
 先读取任务状态、最新计划和必要的结果摘要，检查 worktree 实际改动。
 不要重新创建相同任务，也不要从头复制整段执行日志。
@@ -149,7 +144,7 @@ npm run stop
 
 | 路径 | 内容 |
 |---|---|
-| `worktrees/<task-id>/` | 实际源码改动 |
+| `worktrees/<task-id>/` | worktree 模式的源码改动；branch/current 使用原检出目录 |
 | `.runtime/tasks/<task-id>/task.json` | 当前状态、计划、会话和审核记录 |
 | 同目录 `contract.json` | 最近一次派发的任务契约；当前最新计划以 task.json 为准 |
 | 同目录 `report.json` | 执行者的结构化报告；报告本身不等于独立验收 |
@@ -161,7 +156,7 @@ npm run stop
 
 ## 8. 换模型或改配置
 
-新任务直接说“执行侧用 DeepSeek”或“执行侧用 Kimi K3”，主控会选对应 provider。前提是相应 Key 已配置。订阅主控和执行 API 分别计费；custom provider 报告中的 cost=0 不代表供应商免费。
+新任务直接说“执行侧用 DeepSeek”或“执行侧默认 DeepSeek”，主控会选对应 provider。前提是相应 Key 已配置。订阅主控和执行 API 分别计费；custom provider 报告中的 cost=0 不代表供应商免费。
 
 对**已经创建的任务**，provider 和基准分支属于执行身份，当前版本不能直接改。让主控说明迁移方案，再创建不同任务并处理已有改动，不要假定修改配置就会把原会话自动切到另一家模型。
 
@@ -180,7 +175,7 @@ npm run start
 
 | 现象 | 先怎么处理 |
 |---|---|
-| Skill 命令找不到 | 确认使用启动脚本加载了插件；临时插件入口有 `agent-orchestrator:` 前缀 |
+| Skill 命令找不到 | 确认用户级 MCP/Skill 已安装并重新打开会话；临时插件入口有 `agent-orchestrator:` 前缀 |
 | MCP 工具不可见 | `/mcp` 查看连接；确认工作流文件夹未移动，dist 已构建 |
 | Execution is disabled | 确认你已决定开工，再修改有效配置的开关并重启后台 |
 | Missing Key | 在 `.env.local` 填对应 Key，再重启后台；不要把 Key 放进任务 prompt |
@@ -189,13 +184,19 @@ npm run start
 | 报告不是严格 JSON / 版本不匹配 | 主控查看本轮 response 与 raw-report 工件；诊断提示词或协议，不能把普通文本强行判作成功 |
 | 任务因构建环境阻塞 | 查看日志与所需工具链/环境变量，不要让执行者省略验收命令 |
 | 分支或工作树路径已存在 | 先核对现有任务与已有代码；不要直接删掉或重新建相同任务 |
-| 达到尝试上限 | 让主控总结失败原因并做决策，不要重复创建相同任务绕过预算 |
+| 达到异常恢复上限 | 让主控总结失败原因并做决策，不要重复创建相同任务绕过预算；正常审查返工不限轮数 |
 
 日常排错优先让主控读有针对性的摘要和日志片段。完整 transcript 留给具体问题诊断，避免重新把全部执行细节塞回主控上下文。
 
+CLI 排错可从文件读取请求，避免 shell 的 JSON 转义：
+
+```powershell
+node dist/src/cli.js call TOOL_NAME --file C:/path/to/request.json
+```
+
 ## 相关资料
 
-- [首次验证指南](START-VERIFY.md)：第一次填 Key、探针、接入和启动 #244。
-- [交接协议](PROTOCOL.md)：计划版本、验收 ID、结果格式和改计划机制。
-- [工作流规则](skills/orchestrate-code/SKILL.md)：主控实际遵循的指令。
-- [测试记录](VERIFICATION.md)：已经验证和仍需真实任务验证的边界。
+- [首次验证指南](getting-started.md)：第一次填 Key、探针、接入和启动 #244。
+- [交接协议](protocol.md)：计划版本、验收 ID、结果格式和改计划机制。
+- [工作流规则](../../skills/orchestrate-code/SKILL.md)：主控实际遵循的指令。
+- [架构与执行边界](architecture.md)：后台行为、内存限制及已知边界。

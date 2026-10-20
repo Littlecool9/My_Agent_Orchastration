@@ -8,3 +8,4 @@ worktrees/
 workflow.local.json
 *.log
 work/
+integrations/local/
