@@ -4,9 +4,17 @@
 
 仓库偏好在本地保存可复用的工作流约定。任务自动继承，并各自保存完整合同。仓库专用脚本优先由对应仓库维护，也可以放在本地 profile 旁边。
 
+## 首次使用自动建档
+
+用户正常发起工作流任务即可，无需知道 profile 的存在。Skill 检查后发现没有 profile，就调用 `workflow_repository_init {repository}`。`workflow_task_create` 也会自动补建，避免依赖主控是否记得这个步骤；读取 `workflow_repository_config` 仍保持只读。
+
+最小初始化只需仓库绝对路径，按 Git common directory 自动生成 ID，保存版本 1 和空 defaults/limits/requirements，同时创建本地 `scripts/`。返回 `{created,profile,identity,effectiveLimits}`。重复调用复用已有 profile，不改内容或版本；并发调用和 worktree 共用同一绑定，生成的 ID 冲突时也不会覆盖其他仓库。首次建档后若合同校验失败，这份有效的最小 profile 可能仍会保留。
+
+初始化不会猜测或复制任务中的 provider、验证策略、测试命令、资源预算及代码偏好。未设置项沿用内置默认值，验收仍默认 `commands_required`。它不运行测试或模型，不修改目标仓库文件，执行开关关闭时也可使用。读取仓库规则和处理关键任务选择照常进行，无需专门填写 profile 问卷。仓库不存在、profile 损坏及重复绑定仍明确报错，不自动覆盖修复。
+
 ## 绑定与配置仓库
 
-先读取 `workflow_repository_config {repository}`，查看绑定、profile 版本/哈希、偏好和实际资源上限。创建时调用 `workflow_repository_config_update`，传入稳定 `id`、仓库绝对路径、`expectedRevision=0` 和 `preferences`。例如：
+读取 `workflow_repository_config {repository}`，查看绑定、profile 版本/哈希、偏好和实际资源上限。补充已初始化的偏好时，向 `workflow_repository_config_update` 传入返回的 ID 和当前版本（通常为 1），保留不相关的已有设置。如果在自动初始化前主动创建具名 profile，则可自行指定 ID，并使用 `expectedRevision=0`，例如：
 
 ```json
 {

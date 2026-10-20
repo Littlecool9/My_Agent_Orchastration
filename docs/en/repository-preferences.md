@@ -4,9 +4,17 @@
 
 Repository preferences save reusable workflow choices locally. Tasks inherit them automatically, and each task stores its own full agreement. Repository-specific scripts belong in their owning repository when possible; local helpers can also live next to the profile.
 
+## Automatic first-use initialization
+
+Users can start an ordinary workflow task without knowing about profiles. The Skill checks for an existing profile and calls `workflow_repository_init {repository}` if missing. `workflow_task_create` independently ensures this too, so initialization does not depend on the agent remembering the Skill step. Reading `workflow_repository_config` stays read-only.
+
+Minimal init needs only an absolute repository path. It generates an ID from the Git common directory and saves revision 1 with empty defaults/limits/requirements, plus a local `scripts/` directory. It returns `{created,profile,identity,effectiveLimits}`. Repeated calls reuse the existing profile without rewriting it or changing its revision. Concurrent calls and worktrees converge on the same binding; generated-ID collisions never overwrite another repository's profile. A failed contract validation after first-use init may still leave this valid minimal profile in place.
+
+No provider, validation strategy, test command, resource budget or coding preference is inferred or copied from a task. Unset values inherit built-in defaults; `commands_required` remains the default acceptance policy. Init does not run tests/models or change target repository files, and works with execution disabled. Normal repository-rule reading and meaningful task decisions continue as usual; there is no profile setup questionnaire. Missing repositories, invalid profiles and duplicate bindings remain explicit errors rather than being overwritten.
+
 ## Bind and configure a repository
 
-Read `workflow_repository_config {repository}` first. It reports the binding, profile revision/hash, preferences and effective resource limits. To create a profile, call `workflow_repository_config_update` with a stable `id`, an absolute repository path, `expectedRevision=0` and `preferences`. For example:
+Read `workflow_repository_config {repository}` to see the binding, profile revision/hash, preferences and effective resource limits. To customize an initialized profile, pass its returned ID and current revision (normally 1) to `workflow_repository_config_update`, preserving unrelated preferences. If you explicitly configure a named profile before automatic initialization, use your chosen ID and `expectedRevision=0`, for example:
 
 ```json
 {

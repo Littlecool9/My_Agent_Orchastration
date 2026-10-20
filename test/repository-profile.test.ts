@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Engine } from '../src/engine.js';
 import { ROOT } from '../src/config.js';
-import { git } from '../src/process.js';
+import { git, runCommand } from '../src/process.js';
 import { repositoryIdentity } from '../src/repository-profile.js';
 import { ConfigSchema, RepositoryPreferencesSchema, TaskInputSchema, type TaskInput, type Task } from '../src/schema.js';
 import { callTool } from '../src/tools.js';
@@ -161,12 +163,93 @@ test('command-required tasks still reject review-only acceptance and empty plann
   await assert.rejects(f.engine.createFromInput(input(f.repository, 'empty', { checks: [] })), /at least one/);
 });
 
-test('unbound repositories can create short contracts, and malformed profiles and identity patches fail without creating tasks', async () => {
+test('unbound task creation initializes a minimal profile without persisting task overrides, and invalid profiles/identity patches still fail', async () => {
   const f = await fixture(); const task = await f.engine.createFromInput(input(f.repository, 'one', { provider: 'fixture', verificationPolicy: 'review_allowed' }));
-  assert.equal(task.configuration!.profile, undefined); assert.equal(task.spec.branch, 'codex/one');
+  assert.equal(task.configuration!.profile!.value.revision, 1); assert.equal(task.spec.branch, 'codex/one');
+  assert.deepEqual(task.configuration!.profile!.value.preferences, preferences({ defaults: {} }));
+  assert.equal(task.configuration!.sources.provider, 'task'); assert.equal(task.configuration!.sources.verificationPolicy, 'task');
   await assert.rejects(f.engine.updatePlan('one', 1, { repository: 'C:/other' }, 'Identity change'), /execution identity/);
   assert.equal(f.engine.store.get('one').spec.planRevision, 1);
   const broken = path.join(f.engine.profiles.directory, 'broken'); mkdirSync(broken, { recursive: true }); writeFileSync(path.join(broken, 'profile.json'), '{');
   await assert.rejects(f.engine.createFromInput(input(f.repository, 'two')), /Invalid repository profile/);
   assert.equal(existsSync(f.engine.store.file('two')), false);
+});
+
+test('minimal initialization needs only a repository path and read-only config does not create it', async () => {
+  const f = await fixture();
+  const before = await callTool(f.engine, 'workflow_repository_config', { repository: f.repository }) as any;
+  assert.equal(before.profile, null); assert.equal(existsSync(f.engine.profiles.directory), false);
+  const initialized = await callTool(f.engine, 'workflow_repository_init', { repository: f.repository }) as any;
+  assert.equal(initialized.created, true); assert.equal(initialized.profile.value.revision, 1);
+  assert.deepEqual(initialized.profile.value.preferences, { defaults: {}, limits: {}, requirements: { constraints: [] } });
+  assert.equal(existsSync(path.join(path.dirname(initialized.profile.file), 'scripts')), true);
+  assert.deepEqual(readdirSync(path.dirname(initialized.profile.file)).sort(), ['profile.json', 'scripts']);
+  assert.equal(f.engine.store.all().length, 0);
+  // Init creates local metadata only, including with the execution gate closed.
+  const disabled = new Engine(f.root, { ...f.config, executionEnabled: false }, f.engine.env, f.worker);
+  assert.equal((await callTool(disabled, 'workflow_repository_init', { repository: f.repository }) as any).created, false);
+  await assert.rejects(f.engine.createFromInput(input(f.repository, 'requires-check', { provider: 'fixture' })), /at least one/);
+});
+
+test('repeated and concurrent initialization across worktrees reuses one profile without rewriting custom preferences', async () => {
+  const f = await fixture(); const worktree = path.join(f.root, 'another name');
+  await git(f.repository, ['worktree', 'add', '-b', 'feature', worktree, 'master']);
+  const results = await Promise.all(Array.from({ length: 6 }, (_, index) => f.engine.profiles.initialize(index % 2 ? worktree : f.repository, f.config))) as any[];
+  assert.equal(results.filter(r => r.created).length, 1); assert.equal(new Set(results.map(r => r.profile.file)).size, 1);
+  const original = results[0]!.profile; const file = original.file;
+  const contents = readFileSync(file, 'utf8');
+  assert.equal((await f.engine.profiles.initialize(worktree, f.config) as any).profile.hash, original.hash);
+  assert.equal(readFileSync(file, 'utf8'), contents);
+  const customized = preferences({ defaults: { provider: 'fixture', verificationPolicy: 'review_allowed', resources: { workerMemoryLimitMB: 512 } }, requirements: { constraints: ['Keep headers'] } });
+  await f.engine.profiles.update(f.repository, original.value.id, 1, customized, f.config);
+  const updated = readFileSync(file, 'utf8');
+  const reused = await f.engine.profiles.initialize(worktree, f.config) as any;
+  assert.equal(reused.created, false); assert.equal(reused.profile.value.revision, 2);
+  assert.deepEqual(reused.profile.value.preferences, customized); assert.equal(readFileSync(file, 'utf8'), updated);
+  const task = await f.engine.createFromInput(input(worktree));
+  assert.equal(task.configuration!.profile!.value.id, original.value.id); assert.equal(task.spec.resources!.workerMemoryLimitMB, 512);
+});
+
+test('auto initialization distinguishes same-name repositories and never overwrites an occupied generated ID', async () => {
+  const f = await fixture(); const identity = await repositoryIdentity(f.repository);
+  const label = path.basename(f.repository).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const digest = createHash('sha256').update(identity.commonGitDir).digest('hex');
+  const other = path.join(f.root, 'nested', path.basename(f.repository)); mkdirSync(other, { recursive: true }); await git(other, ['init', '-b', 'master']);
+  const occupiedID = `${label}-${digest.slice(0, 12)}`;
+  await f.engine.profiles.update(other, occupiedID, 0, preferences(), f.config);
+  const occupiedFile = path.join(f.engine.profiles.directory, occupiedID, 'profile.json'); const occupied = readFileSync(occupiedFile, 'utf8');
+  const initialized = await f.engine.profiles.initialize(f.repository, f.config) as any;
+  assert.equal(initialized.created, true); assert.notEqual(initialized.profile.value.id, occupiedID);
+  assert.equal(readFileSync(occupiedFile, 'utf8'), occupied);
+  const reused = await f.engine.profiles.initialize(other, f.config) as any;
+  assert.equal(reused.created, false); assert.equal(reused.profile.value.id, occupiedID);
+});
+
+test('minimal init preserves errors for missing repositories, malformed profiles and duplicate bindings', async () => {
+  const f = await fixture();
+  await assert.rejects(f.engine.profiles.initialize(path.join(f.root, 'missing'), f.config), /ENOENT/);
+  assert.equal(existsSync(f.engine.profiles.directory), false);
+  await configure(f); const profile = (await f.engine.profiles.read(f.repository, f.config) as any).profile;
+  const duplicate = path.join(f.engine.profiles.directory, 'duplicate'); mkdirSync(duplicate);
+  writeFileSync(path.join(duplicate, 'profile.json'), JSON.stringify({ ...profile.value, id: 'duplicate' }));
+  await assert.rejects(f.engine.profiles.initialize(f.repository, f.config), /Multiple profiles/);
+  writeFileSync(path.join(duplicate, 'profile.json'), '{');
+  await assert.rejects(f.engine.profiles.initialize(f.repository, f.config), /Invalid repository profile/);
+});
+
+test('separate processes initialize one complete profile and leave no temporary files', async () => {
+  const f = await fixture();
+  const module = pathToFileURL(path.join(ROOT, 'dist/src/repository-profile.js')).href;
+  const source = `import { RepositoryProfiles } from ${JSON.stringify(module)};
+const result=await new RepositoryProfiles(${JSON.stringify(f.root)}).initialize(${JSON.stringify(f.repository)},${JSON.stringify(f.config)});
+console.log(JSON.stringify(result));`;
+  const outcomes = await Promise.all(Array.from({ length: 3 }, () => runCommand(process.execPath, ['--input-type=module', '-e', source], f.root, process.env, 15000)));
+  for (const outcome of outcomes) assert.equal(outcome.code, 0, outcome.output);
+  const results = outcomes.map(outcome => JSON.parse(outcome.stdout));
+  assert.equal(results.filter(result => result.created).length, 1);
+  assert.equal(new Set(results.map(result => result.profile.hash)).size, 1);
+  assert.equal(readdirSync(f.engine.profiles.directory).length, 1);
+  assert.deepEqual(readdirSync(path.dirname(results[0].profile.file)).sort(), ['profile.json', 'scripts']);
+  assert.deepEqual(JSON.parse(readFileSync(results[0].profile.file, 'utf8')).preferences, { defaults: {}, limits: {}, requirements: { constraints: [] } });
+  assert.equal(await git(f.repository, ['status', '--porcelain']), '');
 });

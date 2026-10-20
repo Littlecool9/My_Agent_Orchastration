@@ -10,7 +10,7 @@ Claude/GPT 主控决定计划；MCP 提交 JSON，Zod 校验后存储；程序�
 
 TaskSpec：contractVersion=1，planRevision 从 1 开始；id、repository、baseRef、branch、provider、mode、workspaceMode、dependencies 是执行身份字段。goal/nonGoals、decisions（含理由）、contextRefs、steps（前序依赖、fixed/adaptable）、autonomy、带稳定 ID 的 acceptance、constraints、allowedPaths 以及两组测试 workerChecks / checks 是工作约定。完整实例见 [examples/alpha-244.json](../../examples/alpha-244.json)；最终 Schema 以 [src/schema.ts](../../src/schema.ts) 为准。
 
-创建输入可少于完整 TaskSpec，只必填 `id`、`repository`、`goal` 和 `acceptance`。服务端读取仓库本地 profile，合并任务覆盖与内置默认值，保存完整合同及含 profile 内容/版本/哈希和来源的 `configuration-vN.json`。通过 `workflow_repository_config` 读取偏好，`workflow_repository_config_update` 明确修改，详见[仓库偏好](repository-preferences.md)。
+创建输入可少于完整 TaskSpec，只必填 `id`、`repository`、`goal` 和 `acceptance`。仓库本地 profile 缺失时，服务端先最小初始化且不保存本次任务选择，再合并任务覆盖与内置默认值，保存完整合同及含 profile 内容/版本/哈希和来源的 `configuration-vN.json`。`workflow_repository_init {repository}` 也提供直接的幂等初始化；`workflow_repository_config` 保持只读，`workflow_repository_config_update` 明确修改偏好，详见[仓库偏好](repository-preferences.md)。
 
 每次 dispatch 都生成 runId，加入 attempt 和程序解析出的 workspace.path/worktree/mode/baseCommit，写入 contract.json 及不会被覆盖的 contract-run-UUID.json。它是执行者本轮接到的契约。状态变化使用 revision，计划变化使用 planRevision；两者不能互换。
 

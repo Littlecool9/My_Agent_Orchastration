@@ -21,21 +21,33 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'dist/src/cli.js'), 'mcp'], stderr: 'pipe' });
   try {
     await client.connect(transport);
-    const listed = await client.listTools(); assert.equal(listed.tools.length, 16);
+    const listed = await client.listTools(); assert.equal(listed.tools.length, 17);
     assert.ok(listed.tools.some(t => t.name === 'workflow_dispatch'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_verify_stop'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_evidence_add'));
+    assert.ok(listed.tools.some(t => t.name === 'workflow_repository_init'));
     const response = await client.callTool({ name: 'workflow_config', arguments: {} });
     assert.equal(response.isError, undefined);
     const content = response.content as { type: string; text: string }[];
     assert.equal(JSON.parse(content[0]!.text).executionEnabled, false);
     const repository = path.join(root, 'repository'); mkdirSync(repository);
     const initialized = await runCommand('git', ['init', '-b', 'master'], repository); assert.equal(initialized.code, 0, initialized.output);
-    const configured = await client.callTool({ name: 'workflow_repository_config_update', arguments: { repository, id: 'fixture-project', expectedRevision: 0,
+    const initialResponse = await client.callTool({ name: 'workflow_repository_init', arguments: { repository } });
+    assert.equal(initialResponse.isError, undefined);
+    const initial = JSON.parse((initialResponse.content as { text: string }[])[0]!.text);
+    assert.equal(initial.created, true);
+    const configured = await client.callTool({ name: 'workflow_repository_config_update', arguments: { repository, id: initial.profile.value.id, expectedRevision: 1,
       preferences: { defaults: { provider: 'fixture', verificationPolicy: 'review_allowed' } } } });
     assert.equal(configured.isError, undefined);
     const preferences = await client.callTool({ name: 'workflow_repository_config', arguments: { repository } });
-    assert.equal(JSON.parse((preferences.content as { text: string }[])[0]!.text).profile.value.id, 'fixture-project');
+    assert.equal(JSON.parse((preferences.content as { text: string }[])[0]!.text).profile.value.id, initial.profile.value.id);
+    const firstUseRepository = path.join(root, 'first-use'); mkdirSync(firstUseRepository);
+    assert.equal((await runCommand('git', ['init', '-b', 'master'], firstUseRepository)).code, 0);
+    const firstTask = await client.callTool({ name: 'workflow_task_create', arguments: { spec: { id: 'first-use', repository: firstUseRepository,
+      provider: 'fixture', mode: 'investigate', goal: 'Create without an explicit init call', acceptance: [{ id: 'AC-01', requirement: 'No execution' }] } } });
+    assert.equal(firstTask.isError, undefined);
+    const automatic = await client.callTool({ name: 'workflow_repository_config', arguments: { repository: firstUseRepository } });
+    assert.deepEqual(JSON.parse((automatic.content as { text: string }[])[0]!.text).profile.value.preferences.defaults, {});
     const spec = { id: 'wait-fixture', repository, mode: 'investigate', goal: 'Offline CLI wait', acceptance: [{ id: 'AC-01', requirement: 'No execution' }] };
     await client.callTool({ name: 'workflow_task_create', arguments: { spec } });
     const cli = path.join(root, 'dist/src/cli.js');

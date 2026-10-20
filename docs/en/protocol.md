@@ -12,7 +12,7 @@ The Claude/GPT supervisor owns the plan. MCP submits JSON, Zod validates it and 
 
 See the [complete example](../../examples/alpha-244.json); [src/schema.ts](../../src/schema.ts) is authoritative.
 
-The creation input can be shorter than `TaskSpec`: only `id`, `repository`, `goal` and `acceptance` are mandatory. The server reads the repository's local profile, merges task overrides and built-in defaults, then stores the full resolved contract and `configuration-vN.json` with profile content/revision/hash and provenance. `workflow_repository_config` reads preferences; `workflow_repository_config_update` explicitly updates them. See [repository preferences](repository-preferences.md).
+The creation input can be shorter than `TaskSpec`: only `id`, `repository`, `goal` and `acceptance` are mandatory. If missing, the server initializes a minimal local profile without persisting task choices, merges task overrides and built-in defaults, then stores the full resolved contract and `configuration-vN.json` with profile content/revision/hash and provenance. `workflow_repository_init {repository}` also provides idempotent initialization directly; `workflow_repository_config` stays read-only and `workflow_repository_config_update` explicitly updates preferences. See [repository preferences](repository-preferences.md).
 
 Every dispatch generates a `runId`, adds the attempt and resolved workspace path/mode/base commit, and writes `contract.json` plus immutable `contract-run-UUID.json`. This is the contract received for that run. State transitions use `revision`; plan changes use `planRevision`.
 

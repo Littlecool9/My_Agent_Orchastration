@@ -41,7 +41,7 @@ export class Engine {
   }
   async createFromInput(input: TaskInput): Promise<Task> {
     input = TaskInputSchema.parse(input);
-    const identity = await repositoryIdentity(input.repository); const profile = this.profiles.find(identity);
+    const identity = await repositoryIdentity(input.repository); const { profile } = this.profiles.ensure(identity);
     const { spec, configuration } = resolveTaskInput(input, identity, profile, this.config);
     return this.create(spec, configuration);
   }

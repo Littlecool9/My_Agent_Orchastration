@@ -1,10 +1,10 @@
 import path from 'node:path';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync, renameSync, statSync, linkSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { git } from './process.js';
 import { RepositoryPreferencesSchema, RepositoryProfileSchema, TaskSpecSchema, DEFAULT_PROVIDER,
   type Config, type RepositoryConfiguration, type RepositoryIdentity, type RepositoryPreferences, type ResourceSettings,
-  type Task, type TaskPlanPatch, type TaskSpec } from './schema.js';
+  type Task, type TaskPlanPatch, type TaskSpec, type RepositoryProfile } from './schema.js';
 
 type ProfileSnapshot = RepositoryConfiguration['profile'];
 const identityFields = ['id', 'contractVersion', 'repository', 'baseRef', 'fetchRemote', 'branch', 'provider', 'mode', 'workspaceMode', 'dependencies'] as const;
@@ -31,6 +31,9 @@ export function assertResourceLimits(resources: ResourceSettings | undefined, li
 export class RepositoryProfiles {
   readonly directory: string;
   constructor(root: string) { this.directory = path.join(root, 'skills/orchestrate-code/repositories.local'); }
+  private snapshot(file: string, value: RepositoryProfile): NonNullable<ProfileSnapshot> {
+    return { file, value, hash: createHash('sha256').update(JSON.stringify(value)).digest('hex') };
+  }
   private entries(): NonNullable<ProfileSnapshot>[] {
     if (!existsSync(this.directory)) return [];
     return readdirSync(this.directory, { withFileTypes: true }).filter(d => d.isDirectory()).flatMap(d => {
@@ -39,13 +42,44 @@ export class RepositoryProfiles {
       try { value = RepositoryProfileSchema.parse(JSON.parse(readFileSync(file, 'utf8'))); }
       catch (error) { throw new Error(`Invalid repository profile ${file}: ${error}`); }
       if (value.id !== d.name) throw new Error(`Profile id must match its directory: ${file}`);
-      return [{ file, value, hash: createHash('sha256').update(JSON.stringify(value)).digest('hex') }];
+      return [this.snapshot(file, value)];
     });
   }
   find(identity: RepositoryIdentity): ProfileSnapshot {
     const matches = this.entries().filter(p => key(p.value.repository.commonGitDir) === key(identity.commonGitDir));
     if (matches.length > 1) throw new Error('Multiple profiles are bound to this repository; keep one explicit binding');
     return matches[0];
+  }
+  ensure(identity: RepositoryIdentity): { created: boolean; profile: NonNullable<ProfileSnapshot> } {
+    const existing = this.find(identity); if (existing) return { created: false, profile: existing };
+    const digest = createHash('sha256').update(key(identity.commonGitDir)).digest('hex');
+    const label = path.basename(path.basename(identity.commonGitDir).toLowerCase() === '.git' ? path.dirname(identity.commonGitDir) : identity.commonGitDir)
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/g, '') || 'repository';
+    for (const length of [12, 20, 32]) {
+      const id = `${label}-${digest.slice(0, length)}`;
+      const dir = path.join(this.directory, id); const file = path.join(dir, 'profile.json');
+      if (existsSync(file)) {
+        const bound = this.find(identity); if (bound) return { created: false, profile: bound };
+        continue;
+      }
+      const value = RepositoryProfileSchema.parse({ schemaVersion: 1, id, revision: 1, repository: identity, preferences: {} });
+      mkdirSync(dir, { recursive: true }); mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+      const temp = `${file}.${randomUUID()}.tmp`;
+      writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
+      try {
+        // Publish a complete file without replacing another caller's profile.
+        linkSync(temp, file);
+        return { created: true, profile: this.snapshot(file, value) };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const bound = this.find(identity); if (bound) return { created: false, profile: bound };
+      } finally { unlinkSync(temp); }
+    }
+    throw new Error('Cannot allocate a repository profile ID; generated IDs are already occupied');
+  }
+  async initialize(repository: string, config: Config): Promise<unknown> {
+    const identity = await repositoryIdentity(repository); const result = this.ensure(identity);
+    return { ...result, identity, effectiveLimits: resourceLimits(config, result.profile.value.preferences) };
   }
   async read(repository: string, config: Config): Promise<unknown> {
     const identity = await repositoryIdentity(repository); const profile = this.find(identity);
