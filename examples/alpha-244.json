@@ -8,7 +8,7 @@
     "fetchRemote": "origin",
     "baseRef": "origin/master",
     "branch": "workflow/244-prefab-identity",
-    "provider": "kimi",
+    "provider": "deepseek",
     "mode": "implement",
     "goal": "Implement https://github.com/GAM550F26/alpha/issues/244 following design #230. Before coding, supervisor must reread the current issues and applicable AGENTS.md at the recorded latest-master base. Deliver persistent identity, versioned source format and document registry only. Do not implement #245-#255 runtime/editor features.",
     "nonGoals": [
@@ -68,7 +68,7 @@
       },
       {
         "id": "S3",
-        "instruction": "Add meaningful tests and complete both configured Debug/Release checks, repairing local failures; return a criterion-linked report.",
+        "instruction": "Add meaningful regression tests and run only incremental checks for affected prefab targets. The supervisor chooses independent validation scope based on change risk and project size; full verification is optional unless currently explicitly required. Return a criterion-linked report.",
         "dependsOn": [
           "S2"
         ],
@@ -116,7 +116,7 @@
     ],
     "constraints": [
       "Read root and relevant module AGENTS.md. Preserve module dependency rules and existing source-author headers.",
-      "Independent worktree and build directories. Debug and Release must build and all tests must pass. Reconfigure after any CMakeLists change.",
+      "Worktree is recommended; branch or current checkout may be selected by the supervisor. Keep appropriate build directories. Worker runs incremental checks only; supervisor chooses independent verification scope and records its rationale/omissions. Reconfigure after CMakeLists changes.",
       "Do not use sed to edit CRLF files. Keep comments short. No Co-Authored-By AI trailer.",
       "Do not commit, push, open PRs, close issues or mutate GitHub. Provide a concise Chinese PR description as a local result.",
       "If public APIs/files/modules change, follow this base revision's agents-md-sync workflow."
@@ -149,6 +149,27 @@
           "D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/scripts/alpha-check.ps1",
           "-Preset",
           "windows-msvc-release"
+        ],
+        "timeoutMinutes": 120
+      }
+    ],
+    "workspaceMode": "worktree",
+    "workerChecks": [
+      {
+        "name": "prefab-incremental",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "D:/desktop/programming/personal-projects/agents-related/agent-orchestrator/scripts/alpha-check.ps1",
+          "-Preset",
+          "windows-msvc-debug",
+          "-Target",
+          "engine_prefab_tests",
+          "-TestRegex",
+          "prefab"
         ],
         "timeoutMinutes": 120
       }

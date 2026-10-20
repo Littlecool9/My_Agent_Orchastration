@@ -11,7 +11,7 @@ export function makeReport(task: Task, outcome: 'ready_for_review' | 'needs_repl
     attempt: task.attempts, outcome, summary: '完成本地 fixture 检查。',
     acceptanceResults: task.spec.acceptance.map(c => ({ id: c.id, status: outcome === 'ready_for_review' ? 'met' : 'not_checked', evidence: ['value.txt'] })),
     changedFiles: task.spec.mode === 'investigate' ? [] : ['value.txt'],
-    checks: task.spec.checks.map(c => ({ name: c.name, result: outcome === 'ready_for_review' ? 'passed' : 'not_run', evidence: outcome === 'ready_for_review' ? ['fixture log'] : [] })),
+    checks: (task.spec.workerChecks ?? []).map(c => ({ name: c.name, result: outcome === 'ready_for_review' ? 'passed' : 'not_run', evidence: outcome === 'ready_for_review' ? ['fixture log'] : [] })),
     deviations: [], blockers: outcome === 'ready_for_review' ? [] : [{ criterionIds: [task.spec.acceptance[0]!.id], reason: 'Fixture blocker', evidence: ['AGENTS.md'], proposedChange: 'Revise the fixture decision' }],
   });
 }

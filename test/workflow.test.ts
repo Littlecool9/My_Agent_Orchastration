@@ -143,3 +143,97 @@ test('a recorded infrastructure credit preserves monotonic attempt IDs and still
   await engine.review('one', 'rework', 'More coverage', ['value.txt'], feedback);
   await assert.rejects(engine.dispatch('one'), /Attempt limit/);
 });
+
+test('new tasks default to DeepSeek and preserve an explicit provider selection', async () => {
+  const f = await fixture({ providers: { ...config.providers, deepseek: { ...config.providers.fixture!, model: 'deepseek-flash' } } });
+  const spec = TaskSpecSchema.parse({ ...f.spec, id: 'default-ds', provider: undefined });
+  assert.equal(f.engine.create(spec).spec.provider, 'deepseek');
+  assert.equal(f.engine.store.get('one').spec.provider, 'fixture');
+  const status = await callTool(f.engine, 'workflow_config', {}) as any;
+  assert.equal(status.defaultProvider, 'deepseek'); assert.equal(status.defaultModel, 'deepseek-flash');
+});
+
+test('branch workspace uses the repository checkout and full verification still gates acceptance', async () => {
+  const f = await fixture();
+  f.engine.create({ ...f.spec, id: 'branch-task', branch: 'workflow/branch-task', workspaceMode: 'branch',
+    workerChecks: [{ name: 'targeted', command: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMinutes: 1 }] });
+  const prepared = await f.engine.prepare('branch-task');
+  assert.equal(prepared.worktree, f.repository);
+  assert.equal(existsSync(path.join(f.root, 'worktrees/branch-task')), false);
+  assert.equal(await git(f.repository, ['branch', '--show-current']), 'workflow/branch-task');
+  await f.engine.dispatch('branch-task'); await until(f.engine, 'branch-task', 'awaiting_review');
+  await assert.rejects(f.engine.review('branch-task', 'accept', 'reviewed', ['value.txt']), /verification/);
+  await f.engine.verify('branch-task'); const verified = await until(f.engine, 'branch-task', 'awaiting_review');
+  assert.deepEqual(verified.checks.map(c => c.name), ['actual-value']);
+  assert.deepEqual(verified.report!.checks.map(c => c.name), ['targeted']);
+  assert.equal((await f.engine.review('branch-task', 'accept', 'reviewed full and targeted results', ['value.txt', 'verify-actual-value.log'])).status, 'accepted');
+});
+
+test('direct primary-branch work requires a recorded warning, then prepares without another approval', async () => {
+  const f = await fixture();
+  const spec = { ...f.spec, id: 'direct', branch: 'master', workspaceMode: 'current' as const };
+  f.engine.create(spec);
+  await assert.rejects(f.engine.prepare('direct'), /warning required/i);
+  const warning = '警告：本任务将直接修改 master 主分支。';
+  await f.engine.updatePlan('direct', 1, { ...spec, planRevision: 2, mainBranchWarning: warning }, 'Record displayed primary-branch warning');
+  const task = await f.engine.prepare('direct');
+  assert.equal(task.worktree, f.repository); assert.deepEqual(task.workspaceWarnings, [warning]);
+  assert.equal(await git(f.repository, ['branch', '--show-current']), 'master');
+  assert.ok(readFileSync(path.join(f.engine.store.dir('direct'), 'events.jsonl'), 'utf8').includes(warning));
+});
+
+test('in-place preparation preserves dirty files and prevents concurrent ownership or branch switching', async () => {
+  const f = await fixture();
+  f.engine.create({ ...f.spec, id: 'owner', branch: 'workflow/owner', workspaceMode: 'branch' });
+  f.engine.create({ ...f.spec, id: 'other', branch: 'workflow/other', workspaceMode: 'branch' });
+  writeFileSync(path.join(f.repository, 'personal.txt'), 'user work');
+  await assert.rejects(f.engine.prepare('owner'), /existing changes/);
+  assert.equal(readFileSync(path.join(f.repository, 'personal.txt'), 'utf8'), 'user work');
+  // Commit only the temporary fixture's user file, so branch preparation can proceed.
+  await git(f.repository, ['add', 'personal.txt']);
+  await git(f.repository, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture personal file']);
+  await f.engine.prepare('owner');
+  await assert.rejects(f.engine.prepare('other'), /reserved by another task/);
+  assert.equal(await git(f.repository, ['branch', '--show-current']), 'workflow/owner');
+});
+
+test('concurrent prepares cannot reserve the same repository directory twice', async () => {
+  const f = await fixture();
+  f.engine.create({ ...f.spec, id: 'a', branch: 'workflow/a', workspaceMode: 'branch' });
+  f.engine.create({ ...f.spec, id: 'b', branch: 'workflow/b', workspaceMode: 'branch' });
+  const outcomes = await Promise.allSettled([f.engine.prepare('a'), f.engine.prepare('b')]);
+  assert.equal(outcomes.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(outcomes.filter(r => r.status === 'rejected').length, 1);
+});
+
+test('switching a prepared shared checkout branch prevents dispatch', async () => {
+  const f = await fixture();
+  f.engine.create({ ...f.spec, id: 'shared', branch: 'workflow/shared', workspaceMode: 'branch' });
+  await f.engine.prepare('shared'); await git(f.repository, ['switch', 'master']);
+  await assert.rejects(f.engine.dispatch('shared'), /branch changed/);
+  assert.equal(f.worker.sessions.length, 0);
+});
+
+test('supervisor chooses bounded verification without running planned full-suite commands', async () => {
+  const f = await fixture();
+  const original = f.engine.store.get('one');
+  original.spec.checks = [{ name: 'expensive-full', command: process.execPath, args: ['-e', 'process.exit(91)'], timeoutMinutes: 1 }];
+  f.engine.store.save(original);
+  await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  await f.engine.verify('one', { strategy: 'affected', rationale: 'Only value.txt changed; inspect its output instead of running the large project matrix',
+    checks: [{ name: 'affected-value', command: process.execPath, args: ['-e', "if(require('fs').readFileSync('value.txt','utf8') !== 'good\\n')process.exit(1)"], timeoutMinutes: 1 }],
+    omittedCoverage: ['Full project regression matrix'] });
+  const result = await until(f.engine, 'one', 'awaiting_review');
+  assert.deepEqual(result.checks.map(c => c.name), ['affected-value']); assert.equal(result.checks[0]!.passed, true);
+  assert.equal(result.spec.checks[0]!.name, 'expensive-full');
+  assert.deepEqual(result.verificationSelection?.omittedCoverage, ['Full project regression matrix']);
+  assert.equal((await f.engine.review('one', 'accept', 'Affected test passed; full-matrix omission reviewed', ['value.txt', 'verify-affected-value.log'])).status, 'accepted');
+});
+
+test('selected verification cannot skip every check or accept a failed selected check', async () => {
+  const f = await fixture(); await f.engine.prepare('one'); await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+  await assert.rejects(f.engine.verify('one', { strategy: 'custom', rationale: 'No tests', checks: [], omittedCoverage: [] }), /at least one supervisor-selected/);
+  await f.engine.verify('one', { strategy: 'targeted', rationale: 'Focused regression', checks: [{ name: 'failure', command: process.execPath, args: ['-e', 'process.exit(4)'], timeoutMinutes: 1 }], omittedCoverage: [] });
+  const result = await until(f.engine, 'one', 'awaiting_review'); assert.equal(result.checks[0]!.exitCode, 4);
+  await assert.rejects(f.engine.review('one', 'accept', 'reviewed', ['log']), /checks must pass/);
+});

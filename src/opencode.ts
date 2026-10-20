@@ -10,6 +10,7 @@ import type { Config, Task } from './schema.js';
 import { reportJsonSchema, taskContract } from './protocol.js';
 import { promptAsync } from './opencode-session.js';
 import { repairSessionHistory } from './opencode-history.js';
+import { memoryGuardLaunch, readMemoryReport, workerExitError } from './memory-guard.js';
 
 export interface WorkerResult { report: unknown; transcript: unknown; tokens: number; cost: number }
 export interface Worker {
@@ -92,8 +93,11 @@ export class OpenCodeWorker implements Worker {
     const password = randomBytes(24).toString('hex');
     const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot);
     const port = await freePort(); const executable = opencodeExecutable(this.root);
+    const memoryReport = path.join(stateRoot, 'memory-' + task.attempts + '-' + (repairOnly ? 'repair-' + Date.now() : task.runId) + '.json');
+    const guarded = memoryGuardLaunch(this.root, memoryReport + '.launch.json', memoryReport, this.config.workerMemoryLimitMB ?? 3072,
+      executable.command, [...executable.args, 'serve', '--hostname', '127.0.0.1', '--port', String(port)]);
     const stream = createWriteStream(path.join(stateRoot, 'server.log'), { flags: 'a' });
-    const child = spawn(process.execPath, [path.join(this.root, 'dist/src/worker-host.js'), executable.command, ...executable.args, 'serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+    const child = spawn(process.execPath, [path.join(this.root, 'dist/src/worker-host.js'), guarded.command, ...guarded.args], {
       cwd: task.worktree!, env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     let launchError: Error | undefined; child.on('error', e => { launchError = e; });
@@ -102,7 +106,7 @@ export class OpenCodeWorker implements Worker {
     child.once('close', () => stream.end());
     const entry = { child, url: `http://127.0.0.1:${port}`, auth: 'Basic ' + Buffer.from(`opencode:${password}`).toString('base64'), session: task.sessionID, controller: new AbortController() };
     this.active.set(task.spec.id, entry);
-    child.once('close', () => entry.controller.abort(new Error('OpenCode process exited')));
+    child.once('close', () => entry.controller.abort(workerExitError(memoryReport)));
     let lastTranscript: any[] = [];
     const request = async (route: string, method = 'GET', body?: unknown, timeout = 15000): Promise<any> => {
       try {
@@ -119,7 +123,7 @@ export class OpenCodeWorker implements Worker {
       for (let n = 0; n < 120; n++) {
         if (launchError) throw launchError;
         entry.controller.signal.throwIfAborted();
-        if (child.exitCode !== null || child.signalCode !== null) throw new Error(`OpenCode exited during startup (${child.exitCode}); inspect server.log`);
+        if (child.exitCode !== null || child.signalCode !== null) throw workerExitError(memoryReport);
         try { healthy = Boolean((await request('/global/health', 'GET', undefined, 1000)).healthy); if (healthy) break; } catch { entry.controller.signal.throwIfAborted(); }
         await delay(250);
       }
@@ -156,6 +160,7 @@ export class OpenCodeWorker implements Worker {
       writeFileSync(path.join(stateRoot, repairOnly ? 'history-repair-failure-' + task.attempts + '-' + Date.now() + '.json' : 'failure-' + task.attempts + '.json'), redact(JSON.stringify({
         taskId: task.spec.id, planRevision: task.spec.planRevision, runId: task.runId, attempt: task.attempts,
         sessionID: entry.session, error: String(error), transcript: lastTranscript,
+        memoryGuard: readMemoryReport(memoryReport), memoryReport,
       }, null, 2), { ...this.env, ...env }));
       throw error;
     } finally {

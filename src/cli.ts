@@ -6,6 +6,7 @@ import { opencodeExecutable } from './opencode.js';
 import { runCommand } from './process.js';
 import { serveMcp } from './mcp.js';
 import { liveProbe } from './probe.js';
+import { DEFAULT_PROVIDER } from './schema.js';
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
       const version = await runCommand(bin.command, [...bin.args, '--version'], ROOT, env, 20000);
       const git = await runCommand('git', ['--version'], ROOT, env, 10000);
       console.log(JSON.stringify({ node: process.version, opencode: version.output.trim(), opencodeExitCode: version.code, git: git.output.trim(), executionEnabled: config.executionEnabled,
+        defaultProvider: DEFAULT_PROVIDER, defaultModel: config.providers[DEFAULT_PROVIDER]?.model,
+        workerMemoryLimitMB: config.workerMemoryLimitMB,
         providers: Object.fromEntries(Object.entries(config.providers).map(([id, p]) => [id, { model: p.model, baseURL: p.baseURL, apiKeyPresent: Boolean(env[p.apiKeyEnv]) }])),
         note: 'Local checks only. No model request or repository mutation.' }, null, 2));
       if (version.code || git.code) process.exitCode = 1;

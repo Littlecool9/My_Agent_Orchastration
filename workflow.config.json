@@ -3,6 +3,7 @@
   "maxParallel": 2,
   "maxAttempts": 3,
   "taskTimeoutMinutes": 90,
+  "workerMemoryLimitMB": 3072,
   "providers": {
     "kimi": {
       "baseURL": "https://api.moonshot.cn/v1",

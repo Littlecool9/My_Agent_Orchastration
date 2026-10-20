@@ -11,7 +11,7 @@ const cli = path.join(root, 'dist/src/cli.js');
 const alphaFile = path.join(root, 'examples/alpha-244.json');
 if (existsSync(alphaFile)) {
   const task = JSON.parse(readFileSync(alphaFile, 'utf8'));
-  for (const check of task.spec.checks) {
+  for (const check of [...task.spec.checks, ...(task.spec.workerChecks ?? [])]) {
     const index = check.args.indexOf('-File');
     if (index >= 0) check.args[index + 1] = path.join(root, 'scripts/alpha-check.ps1').replaceAll('\\', '/');
   }

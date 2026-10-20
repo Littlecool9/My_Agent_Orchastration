@@ -99,3 +99,31 @@ test('ordinary rework cannot be sent as unversioned free text', async () => {
 test('live API probe requires the explicit live switch before loading keys or creating a task', async () => {
   await assert.rejects(liveProbe(ROOT, 'kimi', false), /--live/);
 });
+
+test('worker contract exposes incremental commands while full-suite commands stay with the supervisor', () => {
+  const task = contractTask();
+  task.spec.workerChecks = [{ name: 'targeted', command: 'targeted-tests', args: [], timeoutMinutes: 1 }];
+  task.spec.checks = [{ name: 'full-suite', command: 'full-regression-command', args: ['all-configurations'], timeoutMinutes: 30 }];
+  const envelope = taskContract(task) as any;
+  assert.equal(envelope.checks[0].command, 'targeted-tests');
+  assert.deepEqual(envelope.supervisorVerification.checkNames, ['full-suite']);
+  assert.equal(JSON.stringify(envelope).includes('full-regression-command'), false);
+  const report = makeReport(task);
+  report.acceptanceResults[0]!.status = 'pending_supervisor';
+  assert.equal(validateReport(task, report).outcome, 'ready_for_review');
+  assert.deepEqual(report.checks.map(c => c.name), ['targeted']);
+  assert.throws(() => validateReport(task, { ...report, checks: [{ name: 'full-suite', result: 'passed', evidence: ['claimed full suite'] }] }), /each check exactly once/);
+  task.spec.checks = [];
+  assert.throws(() => validateReport(task, report), /configured independent supervisor verification/);
+});
+
+test('legacy plans keep their full checks for verification without sending those commands to workers', () => {
+  const task = contractTask(); delete (task.spec as any).workerChecks;
+  task.spec.checks = [{ name: 'legacy-full', command: 'legacy-full-command', args: [], timeoutMinutes: 1 }];
+  const envelope = taskContract(task) as any;
+  assert.deepEqual(envelope.checks, []);
+  assert.equal(envelope.executionPolicy.supersedesLegacyWorkerFullTestInstructions, true);
+  const report = makeReport(task);
+  assert.equal(validateReport(task, report).outcome, 'ready_for_review');
+  assert.equal(task.spec.checks[0]!.command, 'legacy-full-command');
+});

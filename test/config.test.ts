@@ -13,6 +13,12 @@ function fixture() {
   writeFileSync(path.join(root, 'workflow.config.json'), JSON.stringify(base));
   return root;
 }
+
+test('worker process-tree memory budget defaults to 3 GiB and rejects invalid limits', () => {
+  assert.equal(base.workerMemoryLimitMB, 3072);
+  assert.equal(loadConfig(ROOT).workerMemoryLimitMB, 3072);
+  assert.throws(() => ConfigSchema.parse({ ...base, workerMemoryLimitMB: 0 }));
+});
 test('base config works without a local override; disk changes do not silently reload an active gate', () => {
   const root = fixture(); const active = loadConfig(root);
   assert.equal(configStatus(root, active).restartRequired, false);

@@ -3,17 +3,18 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from './store.js';
 import { executionGuard, redact } from './config.js';
-import { prepareWorktree, assertAllowedPaths, assertWorktree, fingerprint, changedFiles } from './worktree.js';
+import { prepareWorkspace, workspaceMode, workspaceKey, assertAllowedPaths, assertWorktree, fingerprint, changedFiles } from './worktree.js';
 import { runCommand, git } from './process.js';
 import type { Config, Task, TaskSpec } from './schema.js';
 import type { Worker } from './opencode.js';
-import { TaskSpecSchema, type Feedback } from './schema.js';
+import { TaskSpecSchema, VerificationSelectionSchema, type VerificationSelection, type Feedback } from './schema.js';
 import { randomUUID } from 'node:crypto';
 import { taskContract, validateFeedback, validateReport, renderReport } from './protocol.js';
 
 export class Engine {
   readonly store: Store;
   private busy = new Set<string>();
+  private preparingWorkspaces = new Set<string>();
   private running = new Set<string>();
   private verifying = new Map<string, AbortController>();
   private promises = new Map<string, Promise<void>>();
@@ -54,7 +55,14 @@ export class Engine {
         const depHead = await git(dep.worktree!, ['rev-parse', 'HEAD']);
         if (await git(t.spec.repository, ['merge-base', depHead, t.spec.baseRef]) !== depHead) throw new Error(`Selected base does not contain dependency ${depID}`);
       }
-      const prepared = await prepareWorktree(this.root, t.spec);
+      const sharedKey = workspaceMode(t.spec) === 'worktree' ? undefined : workspaceKey(t.spec.repository);
+      if (sharedKey && (this.preparingWorkspaces.has(sharedKey) || this.store.all().some(other =>
+        other.spec.id !== id && other.worktree && !['accepted', 'cancelled'].includes(other.status) && workspaceKey(other.worktree) === sharedKey)))
+        throw new Error('Workspace is already reserved by another task; finish/cancel it or use a separate worktree');
+      if (sharedKey) this.preparingWorkspaces.add(sharedKey);
+      let prepared;
+      try { prepared = await prepareWorkspace(this.root, t.spec); }
+      finally { if (sharedKey) this.preparingWorkspaces.delete(sharedKey); }
       Object.assign(t, prepared, { status: 'ready' }); this.store.event(id, 'prepared', prepared); return this.store.save(t);
     });
   }
@@ -73,6 +81,7 @@ export class Engine {
       // Recheck after awaits so concurrent dispatches cannot oversubscribe.
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached');
       t.feedback = feedback ?? t.feedback; t.status = 'running'; t.attempts++; t.runId = randomUUID(); t.checks = []; delete t.verifiedFingerprint; delete t.lastError; delete t.report;
+      delete t.verificationSelection;
       const contract = redact(JSON.stringify(taskContract(t), null, 2), this.env);
       writeFileSync(path.join(this.store.dir(id), 'contract.json'), contract);
       writeFileSync(path.join(this.store.dir(id), `contract-run-${t.runId}.json`), contract);
@@ -102,13 +111,19 @@ export class Engine {
       current.status = 'failed'; current.lastError = redact(String(error), this.env); this.store.save(current); this.store.event(id, 'failed', current.lastError);
     }
   }
-  async verify(id: string): Promise<Task> {
+  async verify(id: string, selection?: VerificationSelection): Promise<Task> {
     executionGuard(this.config, this.root);
     return this.locked(id, async () => {
       const t = this.store.get(id); if (t.status !== 'awaiting_review') throw new Error('Verify only a completed worker result');
+      const chosen = selection ? VerificationSelectionSchema.parse(selection) : {
+        strategy: 'planned' as const, rationale: 'Use the supervisor-selected checks in the current plan', checks: t.spec.checks, omittedCoverage: [],
+      };
+      if (t.spec.mode === 'implement' && !chosen.checks.length) throw new Error('Implementation requires at least one supervisor-selected verification command');
       await assertWorktree(t); await assertAllowedPaths(t);
       const controller = new AbortController(); this.verifying.set(id, controller);
-      t.status = 'verifying'; t.checks = []; delete t.verifiedFingerprint; delete t.lastError; this.store.save(t);
+      t.status = 'verifying'; t.checks = []; delete t.verifiedFingerprint; delete t.lastError;
+      t.verificationSelection = chosen;
+      this.store.event(id, 'verification_selected', chosen); this.store.save(t);
       const operation = this.runVerification(t, controller.signal).finally(() => { this.verifying.delete(id); this.promises.delete(id); });
       this.promises.set(id, operation); return t;
     });
@@ -117,7 +132,7 @@ export class Engine {
     const id = t.spec.id;
     try {
       const before = await fingerprint(t);
-      for (const check of t.spec.checks) {
+      for (const check of t.verificationSelection?.checks ?? t.spec.checks) {
         const log = path.join(this.store.dir(id), `verify-${check.name}.log`);
         try {
           const result = await runCommand(check.command, check.args, t.worktree!, this.env, check.timeoutMinutes * 60000, log, signal);
@@ -144,7 +159,8 @@ export class Engine {
         if (!t.report || t.report.outcome !== 'ready_for_review' || t.report.planRevision !== t.spec.planRevision) throw new Error('Acceptance requires a current structured ready_for_review report');
         await assertWorktree(t); await assertAllowedPaths(t);
         if (!t.verifiedFingerprint || t.verifiedFingerprint !== await fingerprint(t)) throw new Error('Run independent verification on the current source before acceptance');
-        if (t.spec.mode === 'implement' && (t.checks.length !== t.spec.checks.length || t.checks.some(c => !c.passed))) throw new Error('All required independent checks must pass');
+        const selected = t.verificationSelection?.checks ?? t.spec.checks;
+        if (t.spec.mode === 'implement' && (!selected.length || t.checks.length !== selected.length || t.checks.some((c, index) => !c.passed || c.name !== selected[index]!.name))) throw new Error('All required independent checks must pass');
         t.status = 'accepted';
       } else { if (!feedback) throw new Error('Rework requires criterion-linked structured feedback'); t.feedback = validateFeedback(t, feedback); t.status = 'needs_changes'; }
       t.reviews.push({ decision, rationale, evidence, at: new Date().toISOString(), planRevision: t.spec.planRevision, ...(feedback ? { feedback } : {}) }); this.store.event(id, 'review', t.reviews.at(-1)); return this.store.save(t);
@@ -159,10 +175,12 @@ export class Engine {
       if (spec.planRevision !== expectedPlanRevision + 1) throw new Error('Plan revision must increase exactly by one');
       for (const key of ['id', 'contractVersion', 'repository', 'baseRef', 'fetchRemote', 'branch', 'provider', 'mode', 'dependencies'] as const)
         if (JSON.stringify(spec[key]) !== JSON.stringify(t.spec[key])) throw new Error(`Cannot change execution identity field ${key}; create a distinct task instead`);
+      if (workspaceMode(spec) !== workspaceMode(t.spec)) throw new Error('Cannot change execution identity field workspaceMode; create a distinct task instead');
       if (!changeReason.trim()) throw new Error('Plan update requires a reason');
       writeFileSync(path.join(this.store.dir(id), `plan-v${t.spec.planRevision}.json`), JSON.stringify(t.spec, null, 2));
       t.spec = spec; t.status = t.worktree ? 'ready' : 'planned'; t.checks = [];
       delete t.feedback; delete t.report; delete t.verifiedFingerprint; delete t.lastError; delete t.summary;
+      delete t.verificationSelection;
       this.store.event(id, 'plan_updated', { planRevision: spec.planRevision, changeReason }); return this.store.save(t);
     });
   }
@@ -186,6 +204,8 @@ export class Engine {
       infrastructureRetryCredits: t.infrastructureRetryCredits ?? 0,
       remainingAttempts: Math.max(0, this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0) - t.attempts),
       provider: t.spec.provider, model: this.config.providers[t.spec.provider]?.model, worktree: t.worktree,
+      workspaceMode: workspaceMode(t.spec), workspacePath: t.worktree, workspaceWarnings: t.workspaceWarnings ?? [],
+      workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
       baseCommit: t.baseCommit, sessionID: t.sessionID, summary: t.summary?.slice(0, 2400), lastError: t.lastError,
       checks: t.checks, totalTokensReported: t.totalTokens, costReported: t.cost,
       artifacts: ['task.json', 'events.jsonl', ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : [])] };

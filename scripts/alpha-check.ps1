@@ -1,10 +1,13 @@
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('windows-msvc-debug','windows-msvc-release')][string]$Preset
+    [Parameter(Mandatory=$true)][ValidateSet('windows-msvc-debug','windows-msvc-release')][string]$Preset,
+    [string]$Target,
+    [string]$TestRegex
 )
 $ErrorActionPreference = 'Stop'
 
-# Only used later inside the task's worktree. This script never fetches or pushes.
-if (-not (Test-Path -LiteralPath 'CMakePresets.json')) { throw 'Run from the alpha worktree root.' }
+# Target and TestRegex select an incremental worker check; omission selects supervisor full verification.
+if ([bool]$Target -ne [bool]$TestRegex) { throw 'Incremental checks require both Target and TestRegex.' }
+if (-not (Test-Path -LiteralPath 'CMakePresets.json')) { throw 'Run from the alpha workspace root.' }
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Use Developer PowerShell or install Visual Studio C++ tools.' }
@@ -18,7 +21,11 @@ foreach ($required in @('VCPKG_ROOT','VULKAN_SDK')) {
 }
 & cmake --preset $Preset
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& cmake --build --preset $Preset --parallel 4
+$buildArgs = @('--build', '--preset', $Preset, '--parallel', '4')
+if ($Target) { $buildArgs += @('--target', $Target) }
+& cmake @buildArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& ctest --test-dir "builds/$Preset" --output-on-failure
+$testArgs = @('--test-dir', "builds/$Preset", '--output-on-failure', '--no-tests=error')
+if ($TestRegex) { $testArgs += @('-R', $TestRegex) }
+& ctest @testArgs
 exit $LASTEXITCODE
