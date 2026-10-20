@@ -14,6 +14,11 @@ function fixture() {
   return root;
 }
 
+test('recovery budget defaults to five and the bundled config uses five', () => {
+  assert.equal(ConfigSchema.parse({ ...base, maxAttempts: undefined }).maxAttempts, 5);
+  assert.equal(loadConfig(ROOT).maxAttempts, 5);
+});
+
 test('worker process-tree memory budget defaults to 3 GiB and rejects invalid limits', () => {
   assert.equal(base.workerMemoryLimitMB, 3072);
   assert.equal(loadConfig(ROOT).workerMemoryLimitMB, 3072);

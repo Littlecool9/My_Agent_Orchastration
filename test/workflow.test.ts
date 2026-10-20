@@ -70,12 +70,20 @@ test('a failed independent check cannot be accepted', async () => {
   const result = await until(engine, 'one', 'awaiting_review'); assert.equal(result.checks[0]!.exitCode, 2);
   await assert.rejects(engine.review('one', 'accept', 'reviewed', ['log']), /checks must pass/);
 });
-test('rework resumes the same session and attempt limit stops repeated dispatches', async () => {
+test('supervisor can verify and rework beyond maxAttempts until acceptance in the same session', async () => {
   const { engine, worker } = await fixture(); await engine.prepare('one'); await engine.dispatch('one'); await until(engine, 'one', 'awaiting_review');
   const feedback = { planRevision: 1, summary: 'Cover another edge case', findings: [{ criterionIds: ['AC-01'], description: 'Missing edge case', evidence: ['value.txt'], requestedChange: 'Add coverage' }] };
-  await engine.review('one', 'rework', 'Cover another edge case', ['value.txt'], feedback); await engine.dispatch('one'); await until(engine, 'one', 'awaiting_review');
-  assert.deepEqual(worker.sessions, ['fixture-session', 'fixture-session']);
-  await engine.review('one', 'rework', 'Still incomplete', ['test'], feedback); await assert.rejects(engine.dispatch('one'), /Attempt limit/);
+  for (let round = 0; round < 4; round++) {
+    await engine.verify('one'); await until(engine, 'one', 'awaiting_review');
+    await engine.review('one', 'rework', 'Cover another edge case', ['value.txt'], feedback);
+    await engine.dispatch('one'); await until(engine, 'one', 'awaiting_review');
+  }
+  assert.equal(worker.sessions.length, 5); assert.ok(worker.sessions.every(id => id === 'fixture-session'));
+  const summary = engine.summary(engine.store.get('one')) as any;
+  assert.equal(summary.attempts, 5); assert.equal(summary.recoveryAttempts, 0);
+  assert.equal(summary.remainingRecoveryAttempts, 2); assert.equal(summary.reworkLimit, null);
+  await engine.verify('one'); await until(engine, 'one', 'awaiting_review');
+  assert.equal((await engine.review('one', 'accept', 'All findings resolved', ['value.txt', 'verify-actual-value.log'])).status, 'accepted');
 });
 test('concurrent dispatches cannot bypass the configured parallel limit', async () => {
   const { engine, worker, spec } = await fixture(); worker.hold = true;
@@ -139,10 +147,42 @@ test('a recorded infrastructure credit preserves monotonic attempt IDs and still
   assert.equal(resumed.attempts, 2); assert.notEqual(resumed.runId, firstRun);
   assert.equal(resumed.report!.attempt, 2);
   const summary = engine.summary(resumed) as any;
-  assert.equal(summary.infrastructureRetryCredits, 1); assert.equal(summary.attemptLimit, 2); assert.equal(summary.remainingAttempts, 0);
+  assert.equal(summary.infrastructureRetryCredits, 1); assert.equal(summary.recoveryAttemptLimit, 2);
+  assert.equal(summary.recoveryAttempts, 1); assert.equal(summary.remainingRecoveryAttempts, 1);
   await engine.review('one', 'rework', 'More coverage', ['value.txt'], feedback);
-  await assert.rejects(engine.dispatch('one'), /Attempt limit/);
+  worker.fail = true;
+  await engine.dispatch('one'); await until(engine, 'one', 'failed');
+  await engine.dispatch('one', feedback); await until(engine, 'one', 'failed');
+  await assert.rejects(engine.dispatch('one', feedback), /Recovery attempt limit/);
 });
+
+for (const status of ['failed', 'interrupted', 'blocked'] as const) {
+  test(`${status} recovery has a persistent budget that plan updates cannot bypass`, async () => {
+    const f = await fixture({ maxAttempts: 1 }); await f.engine.prepare('one');
+    await f.engine.dispatch('one'); await until(f.engine, 'one', 'awaiting_review');
+    // Model an already persisted abnormal outcome, including legacy tasks without recovery counters.
+    const task = f.engine.store.get('one'); task.status = status; f.engine.store.save(task);
+    await f.engine.updatePlan('one', 1, { ...f.spec, planRevision: 2 }, 'Diagnose abnormal run');
+    const feedback = { planRevision: 2, summary: 'Resume after diagnosis', findings: [{ criterionIds: ['AC-01'], description: 'Abnormal run diagnosed', evidence: ['run log'], requestedChange: 'Resume implementation' }] };
+    await assert.rejects(f.engine.dispatch('one'), /diagnostic feedback/);
+    delete f.engine.env.FIXTURE_KEY;
+    await assert.rejects(f.engine.dispatch('one', feedback), /Missing FIXTURE_KEY/);
+    assert.equal(f.engine.store.get('one').recoveryAttempts, undefined);
+    f.engine.env.FIXTURE_KEY = 'local-test-only';
+    await f.engine.dispatch('one', feedback); await until(f.engine, 'one', 'awaiting_review');
+    // A successful review/rework round remains available after recovery budget is exhausted.
+    await f.engine.review('one', 'rework', 'Add coverage', ['value.txt'], feedback);
+    f.worker.fail = true;
+    await f.engine.dispatch('one'); await until(f.engine, 'one', 'failed');
+    const engine = new Engine(f.root, { ...config, maxAttempts: 1 }, f.engine.env, f.worker);
+    await engine.updatePlan('one', 2, { ...f.spec, planRevision: 3 }, 'Retain recovery budget');
+    const summary = engine.summary(engine.store.get('one')) as any;
+    assert.equal(summary.attempts, 3); assert.equal(summary.recoveryAttempts, 1);
+    assert.equal(summary.remainingRecoveryAttempts, 0); assert.equal(summary.recoveryPending, true);
+    await assert.rejects(engine.dispatch('one', { ...feedback, planRevision: 3 }), /Recovery attempt limit/);
+    assert.equal(engine.store.get('one').attempts, 3);
+  });
+}
 
 test('new tasks default to DeepSeek and preserve an explicit provider selection', async () => {
   const f = await fixture({ providers: { ...config.providers, deepseek: { ...config.providers.fixture!, model: 'deepseek-flash' } } });

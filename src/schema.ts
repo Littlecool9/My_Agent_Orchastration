@@ -10,7 +10,7 @@ export const ProviderSchema = z.object({
 
 export const ConfigSchema = z.object({
   executionEnabled: z.boolean(), maxParallel: z.number().int().min(1).max(8),
-  maxAttempts: z.number().int().min(1).max(10), taskTimeoutMinutes: z.number().min(1).max(1440),
+  maxAttempts: z.number().int().min(1).max(10).default(5), taskTimeoutMinutes: z.number().min(1).max(1440),
   workerMemoryLimitMB: z.number().int().min(128).max(1048576).default(3072),
   providers: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), ProviderSchema),
 }).strict();
@@ -93,6 +93,8 @@ export interface Task {
   worktree?: string; baseCommit?: string; sessionID?: string; runId?: string;
   workspaceWarnings?: string[];
   infrastructureRetryCredits?: number;
+  recoveryAttempts?: number;
+  recoveryPending?: boolean;
   lastError?: string; summary?: string; feedback?: Feedback; report?: WorkerReport; checks: CheckResult[];
   verifiedFingerprint?: string; reviews: Review[]; totalTokens: number; cost: number;
   verificationSelection?: VerificationSelection;

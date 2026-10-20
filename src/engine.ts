@@ -72,20 +72,24 @@ export class Engine {
       const t = this.store.get(id);
       if (!['ready', 'needs_changes', 'interrupted', 'failed', 'blocked'].includes(t.status)) throw new Error(`Cannot dispatch task in ${t.status}; needs_replan requires a supervisor plan update`);
       if (feedback) feedback = validateFeedback(t, feedback);
-      if (['failed', 'interrupted', 'blocked'].includes(t.status) && !feedback) throw new Error('Resuming a failed/interrupted/blocked task requires structured diagnostic feedback');
-      if (t.attempts >= this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0)) throw new Error('Attempt limit reached. Supervisor must investigate; create a revised task rather than retry indefinitely.');
+      const recovery = t.recoveryPending || ['failed', 'interrupted', 'blocked'].includes(t.status);
+      if (recovery && !feedback) throw new Error('Resuming a failed/interrupted/blocked task requires structured diagnostic feedback');
+      if (recovery && (t.recoveryAttempts ?? 0) >= this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0))
+        throw new Error('Recovery attempt limit reached. Supervisor must investigate or take over a focused fix; do not recreate the same task to bypass the retry budget.');
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached; wait for an active task');
       const p = this.config.providers[t.spec.provider]!;
       if (!this.env[p.apiKeyEnv]) throw new Error(`Missing ${p.apiKeyEnv}; configure it locally and restart the daemon`);
       await this.dependencies(t); await assertWorktree(t);
       // Recheck after awaits so concurrent dispatches cannot oversubscribe.
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached');
+      if (recovery) t.recoveryAttempts = (t.recoveryAttempts ?? 0) + 1;
+      delete t.recoveryPending;
       t.feedback = feedback ?? t.feedback; t.status = 'running'; t.attempts++; t.runId = randomUUID(); t.checks = []; delete t.verifiedFingerprint; delete t.lastError; delete t.report;
       delete t.verificationSelection;
       const contract = redact(JSON.stringify(taskContract(t), null, 2), this.env);
       writeFileSync(path.join(this.store.dir(id), 'contract.json'), contract);
       writeFileSync(path.join(this.store.dir(id), `contract-run-${t.runId}.json`), contract);
-      this.store.save(t); this.running.add(id); this.store.event(id, 'dispatched', { attempt: t.attempts, provider: t.spec.provider });
+      this.store.save(t); this.running.add(id); this.store.event(id, 'dispatched', { attempt: t.attempts, recovery: !!recovery, recoveryAttempts: t.recoveryAttempts ?? 0, provider: t.spec.provider });
       const operation = this.execute(t).finally(() => { this.running.delete(id); this.promises.delete(id); });
       this.promises.set(id, operation); return t;
     });
@@ -178,6 +182,7 @@ export class Engine {
       if (workspaceMode(spec) !== workspaceMode(t.spec)) throw new Error('Cannot change execution identity field workspaceMode; create a distinct task instead');
       if (!changeReason.trim()) throw new Error('Plan update requires a reason');
       writeFileSync(path.join(this.store.dir(id), `plan-v${t.spec.planRevision}.json`), JSON.stringify(t.spec, null, 2));
+      if (['failed', 'interrupted', 'blocked'].includes(t.status)) t.recoveryPending = true;
       t.spec = spec; t.status = t.worktree ? 'ready' : 'planned'; t.checks = [];
       delete t.feedback; delete t.report; delete t.verifiedFingerprint; delete t.lastError; delete t.summary;
       delete t.verificationSelection;
@@ -200,9 +205,12 @@ export class Engine {
   }
   summary(t: Task): unknown {
     return { id: t.spec.id, title: t.spec.title, status: t.status, revision: t.revision, planRevision: t.spec.planRevision, runId: t.runId, attempts: t.attempts,
-      attemptLimit: this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0),
+      attemptLimitScope: 'recovery_only', reworkLimit: null,
+      recoveryAttempts: t.recoveryAttempts ?? 0,
+      recoveryAttemptLimit: this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0),
+      remainingRecoveryAttempts: Math.max(0, this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0) - (t.recoveryAttempts ?? 0)),
+      recoveryPending: !!t.recoveryPending || ['failed', 'interrupted', 'blocked'].includes(t.status),
       infrastructureRetryCredits: t.infrastructureRetryCredits ?? 0,
-      remainingAttempts: Math.max(0, this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0) - t.attempts),
       provider: t.spec.provider, model: this.config.providers[t.spec.provider]?.model, worktree: t.worktree,
       workspaceMode: workspaceMode(t.spec), workspacePath: t.worktree, workspaceWarnings: t.workspaceWarnings ?? [],
       workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
