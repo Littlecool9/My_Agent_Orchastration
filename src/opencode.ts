@@ -94,7 +94,7 @@ export class OpenCodeWorker implements Worker {
     const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot);
     const port = await freePort(); const executable = opencodeExecutable(this.root);
     const memoryReport = path.join(stateRoot, 'memory-' + task.attempts + '-' + (repairOnly ? 'repair-' + Date.now() : task.runId) + '.json');
-    const guarded = memoryGuardLaunch(this.root, memoryReport + '.launch.json', memoryReport, this.config.workerMemoryLimitMB ?? 3072,
+    const guarded = memoryGuardLaunch(this.root, memoryReport + '.launch.json', memoryReport, Math.min(task.spec.resources?.workerMemoryLimitMB ?? Infinity, this.config.workerMemoryLimitMB ?? 3072),
       executable.command, [...executable.args, 'serve', '--hostname', '127.0.0.1', '--port', String(port)]);
     const stream = createWriteStream(path.join(stateRoot, 'server.log'), { flags: 'a' });
     const child = spawn(process.execPath, [path.join(this.root, 'dist/src/worker-host.js'), guarded.command, ...guarded.args], {
@@ -147,7 +147,7 @@ export class OpenCodeWorker implements Worker {
         // (OutputFormatJsonSchema Class encoding). Keep plain transport and enforce
         // the identical report schema in our own protocol, including on resume.
         parts: [{ type: 'text', text: workerPrompt(task) }],
-      }, { timeoutMs: this.config.taskTimeoutMinutes * 60000, signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
+      }, { timeoutMs: Math.min(task.spec.resources?.taskTimeoutMinutes ?? Infinity, this.config.taskTimeoutMinutes) * 60000, signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
       writeFileSync(path.join(stateRoot, `response-${task.attempts}.json`), redact(JSON.stringify(response, null, 2), { ...this.env, ...env }));
       if (response.info?.error) throw new Error(`Worker failed: ${JSON.stringify(response.info.error)}`);
       if (response.info?.finish && !['stop', 'end_turn'].includes(response.info.finish)) throw new Error(`Worker stopped without final completion: ${response.info.finish}`);

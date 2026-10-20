@@ -41,7 +41,7 @@ When nothing is running or verifying, run `npm run stop` followed by `npm run st
 
 ## Select verification
 
-Say “Choose verification based on the change risk; a full suite is not required.” The supervisor records strategy, rationale, commands and `omittedCoverage` through `workflow_verify.selection`, without rewriting the task plan. Implementation acceptance still requires at least one passing independent command and an honest account of untested scope.
+Say “Choose verification based on the change risk; a full suite is not required.” The supervisor records strategy, rationale, commands and `omittedCoverage` through `workflow_verify.selection`, without rewriting the task plan. The default `commands_required` policy requires a passing independent command. A `review_allowed` contract permits explicit review-only acceptance with code evidence and omitted coverage; see [repository preferences](repository-preferences.md).
 
 ## Wait for a result and stop verification
 
@@ -58,7 +58,7 @@ Ask the supervisor to use `workflow_verify_stop` with `{id,reason}` to stop just
 
 Supervisor integration repairs and external tests can be appended using `workflow_evidence_add`. Its `entry` contains `planRevision`, `kind` (`integration`, `verification` or `note`), `summary`, `criterionIds`, `evidence` and optional `log`. Records include the current source fingerprint and remain available after cancellation. This records supervisor-supplied evidence; it does not run commands or mark verification passed.
 
-Repository-specific scripts should be maintained by their owning repository. Optional local scripts and profiles alongside the Skill live under `skills/orchestrate-code/repositories.local/<repository-id>/`, with `profile.json` and `scripts/`; this directory is ignored by Git. Profile loading is currently manual. Automatic per-repository policy resolution is not implemented yet.
+Repository-specific scripts should be maintained by their owning repository. Optional local scripts and profiles alongside the Skill live under `skills/orchestrate-code/repositories.local/<repository-id>/`, with `profile.json` and `scripts/`; this directory is ignored by Git. Use `workflow_repository_config` / `workflow_repository_config_update` to inspect or explicitly change preferences. New tasks automatically inherit them, with a frozen contract snapshot. Only ID, repository, goal and acceptance are mandatory task inputs. See [repository preferences](repository-preferences.md) for defaults, overrides, hard limits and migration.
 
 ## Resume interrupted work
 

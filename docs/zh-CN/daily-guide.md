@@ -51,7 +51,7 @@ API Key 只填一次，文件在：
 
 ## 主控如何选测试
 
-你可以直接说“按改动风险选择验证，不用跑全量”。主控通过 workflow_verify 的 selection 记录策略、理由、检查命令和 omittedCoverage；无需为一次测试选择重写整个任务计划。实现验收仍要求至少一条独立检查命令通过，也必须如实说明未覆盖范围。
+你可以直接说“按改动风险选择验证，不用跑全量”。主控通过 workflow_verify 的 selection 记录策略、理由、检查命令和 omittedCoverage；无需为一次测试选择重写整个任务计划。默认 `commands_required` 要求独立命令通过；`review_allowed` 合同允许主控明确选择仅代码审查，并记录代码证据和未覆盖范围，见[仓库偏好](repository-preferences.md)。
 
 ## 等待结果与停止验证
 
@@ -68,7 +68,7 @@ node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeou
 
 主控整合修改和外部补测通过 `workflow_evidence_add` 追加。`entry` 包含 `planRevision`、`kind`（`integration`、`verification` 或 `note`）、`summary`、`criterionIds`、`evidence` 和可选 `log`。记录绑定当前源码指纹，取消任务后也能追加。它保存主控提供的证据，不执行命令或将验证标为通过。
 
-仓库专用脚本优先由对应仓库维护。需要放在 Skill 旁边的本地脚本与 profile，统一存放在 `skills/orchestrate-code/repositories.local/<repository-id>/`，下设 `profile.json` 和 `scripts/`；该目录已加入 gitignore。目前 profile 由主控手动读取，尚未实现按仓库自动解析验证策略。
+仓库专用脚本优先由对应仓库维护。需要放在 Skill 旁边的本地脚本与 profile，统一存放在 `skills/orchestrate-code/repositories.local/<repository-id>/`，下设 `profile.json` 和 `scripts/`；该目录已加入 gitignore。通过 `workflow_repository_config` / `workflow_repository_config_update` 查看或明确修改偏好。新任务自动继承，并保存冻结的合同快照；创建时只必填 ID、仓库、目标和验收项。默认值、覆盖、硬上限及迁移见[仓库偏好](repository-preferences.md)。
 
 ## 执行中断后继续
 

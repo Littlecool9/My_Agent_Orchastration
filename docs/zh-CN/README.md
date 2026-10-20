@@ -6,6 +6,7 @@
 |---|---|
 | [安装与配置](getting-started.md) | 依赖、Key、配置、客户端接入与首次验证 |
 | [日常使用](daily-guide.md) | 启动任务、查看进度、恢复与交付 |
+| [仓库偏好](repository-preferences.md) | 项目默认值、简短合同、验证策略与配置快照 |
 | [进阶使用](advanced-guide.md) | milestone、状态、恢复预算、验证与排错 |
 | [架构与执行行为](architecture.md) | 调度、隔离、内存监护、会话与限制 |
 | [交接协议](protocol.md) | 带版本的契约、报告、反馈与计划更新 |

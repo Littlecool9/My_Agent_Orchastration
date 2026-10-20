@@ -36,7 +36,7 @@ v0.2 增加 blocked / needs_replan。后者必须先经主控 workflow_plan_upda
 
 内置 build/plan/general/explore/scout 已禁用，执行请求只指定 executor 或 investigator，task/plan 工具禁用；拒绝恢复含内置 Plan 历史的会话。自定义角色允许局部实现与调试，不允许擅改固定设计。任务以 JSON 契约交接，结果是应用层严格 JSON Schema 校验的报告。OpenCode 1.19.3 原生 json_schema format 在本地测试中导致持久会话读取报 OutputFormatJsonSchema 错误，所以采用普通消息承载 JSON，由应用校验，不使用该原生格式。普通文本、缺字段、错误版本和不完整的完成声明均不能进入待验收。
 
-`prepare`、`dispatch`、`verify` 在 executionEnabled=false 时都会拒绝执行。任务创建只记录计划。执行 agent 的“完成”只能进入待验收。`verify` 在模型外真实运行主控选择的命令，记录选择理由、遗漏范围、退出码和日志；`review accept` 要求所选检查全部通过，而且源码自验证后没有变化。主控还必须实际读代码检查功能覆盖，服务器无法替模型证明语义正确。
+`prepare`、`dispatch`、`verify` 在 executionEnabled=false 时都会拒绝执行。任务创建读取本地 Git 身份和 profile，记录解析后的计划，不修改仓库文件或调用模型。profile 绑定 Git common directory，worktree 共用偏好；任务快照保留 profile 版本/哈希及字段来源。执行 agent 的“完成”只能进入待验收。`verify` 在模型外真实运行主控选择的命令，记录理由、遗漏范围、退出码和日志；默认验收要求所选检查在当前源码全部通过。`review_allowed` 合同还允许明确选择仅代码审查，记录源码指纹、理由、证据和遗漏范围。主控须实际读代码检查功能覆盖，服务器无法替模型证明语义正确。详见[仓库偏好](repository-preferences.md)。
 
 MCP 客户端关闭不停止 daemon，所以已派发任务可继续。主控关闭后不会自动产生下一轮规划或验收。daemon 意外终止时，IPC 监护进程负责停止 OpenCode；下次启动把未完成任务标为 interrupted，不自动重放。
 

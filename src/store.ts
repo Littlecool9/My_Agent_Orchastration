@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, exists
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { TaskSpecSchema, type Task, type TaskSpec } from './schema.js';
+import { TaskSpecSchema, type Task, type TaskSpec, type RepositoryConfiguration } from './schema.js';
 
 export class Store {
   private changes = new EventEmitter().setMaxListeners(0);
@@ -16,12 +16,16 @@ export class Store {
   all(): Task[] {
     return readdirSync(this.root, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(this.file(d.name))).map(d => this.get(d.name));
   }
-  create(input: TaskSpec): Task {
+  create(input: TaskSpec, configuration?: RepositoryConfiguration): Task {
     const spec = TaskSpecSchema.parse(input);
     if (existsSync(this.dir(spec.id))) throw new Error('Task ID already exists');
     mkdirSync(this.dir(spec.id));
+    if (configuration) this.writeConfiguration(spec, configuration);
     const now = new Date().toISOString();
-    return this.save({ spec, status: 'planned', revision: 0, attempts: 0, createdAt: now, updatedAt: now, checks: [], reviews: [], totalTokens: 0, cost: 0 });
+    return this.save({ spec, configuration, status: 'planned', revision: 0, attempts: 0, createdAt: now, updatedAt: now, checks: [], reviews: [], totalTokens: 0, cost: 0 });
+  }
+  writeConfiguration(spec: TaskSpec, configuration: RepositoryConfiguration): void {
+    writeFileSync(path.join(this.dir(spec.id), `configuration-v${spec.planRevision}.json`), JSON.stringify({ spec, configuration }, null, 2));
   }
   save(task: Task): Task {
     task.updatedAt = new Date().toISOString(); task.revision++;

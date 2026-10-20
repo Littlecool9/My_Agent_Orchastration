@@ -6,7 +6,8 @@ export function taskContract(task: Task): unknown {
   return { ...task.spec, taskId: task.spec.id, runId: task.runId, attempt: task.attempts,
     checks: task.spec.workerChecks ?? [], workerChecks: task.spec.workerChecks ?? [],
     executionPolicy: { workerTesting: 'incremental_only', supervisorTesting: 'supervisor_selected', supersedesLegacyWorkerFullTestInstructions: true, supersedesLegacySupervisorFullTestInstructions: true },
-    supervisorVerification: { required: task.spec.checks.length > 0, checkNames: task.spec.checks.map(c => c.name) },
+    supervisorVerification: { required: task.spec.verificationPolicy !== 'review_allowed' && task.spec.checks.length > 0, policy: task.spec.verificationPolicy ?? 'commands_required', checkNames: task.spec.checks.map(c => c.name) },
+    repositoryProfile: task.configuration?.profile ? { id: task.configuration.profile.value.id, revision: task.configuration.profile.value.revision, hash: task.configuration.profile.hash } : null,
     workspace: { path: task.worktree, worktree: task.worktree, mode: task.spec.workspaceMode ?? 'worktree', baseCommit: task.baseCommit, branch: task.spec.branch }, feedback: task.feedback ?? null };
 }
 export function validateFeedback(task: Task, input: unknown): Feedback {
@@ -26,7 +27,7 @@ export function validateReport(task: Task, input: unknown): WorkerReport {
   if (new Set(actual).size !== actual.length || actual.length !== ids.length || actual.some(id => !ids.includes(id)))
     throw new Error('Worker report must cover each acceptance criterion exactly once');
   if (report.acceptanceResults.some(x => ['met', 'pending_supervisor'].includes(x.status) && !x.evidence.length)) throw new Error('Met or pending-supervisor criteria require evidence');
-  if (report.acceptanceResults.some(x => x.status === 'pending_supervisor') && !task.spec.checks.length) throw new Error('Pending supervisor criteria require configured independent supervisor verification');
+  if (report.acceptanceResults.some(x => x.status === 'pending_supervisor') && !task.spec.checks.length && task.spec.verificationPolicy !== 'review_allowed') throw new Error('Pending supervisor criteria require configured independent supervisor verification');
   if (report.blockers.some(b => b.criterionIds.some(id => !ids.includes(id)))) throw new Error('Blocker references an unknown acceptance criterion');
   const checkNames = (task.spec.workerChecks ?? []).map(c => c.name); const reported = report.checks.map(c => c.name);
   if (new Set(reported).size !== reported.length || reported.length !== checkNames.length || reported.some(n => !checkNames.includes(n))) throw new Error('Worker report must cover each check exactly once');

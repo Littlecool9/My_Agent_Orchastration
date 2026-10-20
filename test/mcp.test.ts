@@ -7,7 +7,6 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ROOT } from '../src/config.js';
 import { readInfo, rpc, stopDaemon } from '../src/daemon.js';
 import { runCommand } from '../src/process.js';
-import { contractFields } from './fixtures.js';
 
 test('isolated MCP handshake, authentication, reconnect and stale-config recovery without reconnecting the client', { timeout: 60000 }, async () => {
   const scratch = path.join(ROOT, 'work/workflow-tests'); mkdirSync(scratch, { recursive: true });
@@ -22,7 +21,7 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'dist/src/cli.js'), 'mcp'], stderr: 'pipe' });
   try {
     await client.connect(transport);
-    const listed = await client.listTools(); assert.equal(listed.tools.length, 14);
+    const listed = await client.listTools(); assert.equal(listed.tools.length, 16);
     assert.ok(listed.tools.some(t => t.name === 'workflow_dispatch'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_verify_stop'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_evidence_add'));
@@ -30,16 +29,21 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
     assert.equal(response.isError, undefined);
     const content = response.content as { type: string; text: string }[];
     assert.equal(JSON.parse(content[0]!.text).executionEnabled, false);
-    const spec = { ...contractFields, id: 'wait-fixture', title: 'Wait without model calls', repository: root,
-      baseRef: 'master', branch: 'fixture', provider: 'fixture', mode: 'investigate', goal: 'Offline CLI wait',
-      acceptance: [{ id: 'AC-01', requirement: 'No execution' }], checks: [] };
+    const repository = path.join(root, 'repository'); mkdirSync(repository);
+    const initialized = await runCommand('git', ['init', '-b', 'master'], repository); assert.equal(initialized.code, 0, initialized.output);
+    const configured = await client.callTool({ name: 'workflow_repository_config_update', arguments: { repository, id: 'fixture-project', expectedRevision: 0,
+      preferences: { defaults: { provider: 'fixture', verificationPolicy: 'review_allowed' } } } });
+    assert.equal(configured.isError, undefined);
+    const preferences = await client.callTool({ name: 'workflow_repository_config', arguments: { repository } });
+    assert.equal(JSON.parse((preferences.content as { text: string }[])[0]!.text).profile.value.id, 'fixture-project');
+    const spec = { id: 'wait-fixture', repository, mode: 'investigate', goal: 'Offline CLI wait', acceptance: [{ id: 'AC-01', requirement: 'No execution' }] };
     await client.callTool({ name: 'workflow_task_create', arguments: { spec } });
     const cli = path.join(root, 'dist/src/cli.js');
     const timed = await runCommand(process.execPath, [cli, 'wait', 'wait-fixture', '--timeout-ms', '150', '--json'], root, process.env, 10000);
     assert.equal(timed.code, 2, timed.output); assert.equal(JSON.parse(timed.stdout).reason, 'timeout');
     const waiting = runCommand(process.execPath, [cli, 'wait', 'wait-fixture', '--until', 'change', '--after', 'wait-fixture=1', '--timeout-ms', '5000'], root, process.env, 10000);
     await client.callTool({ name: 'workflow_plan_update', arguments: { id: 'wait-fixture', expectedPlanRevision: 1,
-      spec: { ...spec, planRevision: 2, goal: 'Updated while waiting' }, changeReason: 'Exercise revision notification' } });
+      spec: { goal: 'Updated while waiting' }, changeReason: 'Exercise revision notification' } });
     const changed = await waiting; assert.equal(changed.code, 0, changed.output);
     assert.equal(JSON.parse(changed.stdout).reason, 'changed'); assert.equal(JSON.parse(changed.stdout).tasks[0].planRevision, 2);
     writeFileSync(path.join(root, 'workflow.config.json'), JSON.stringify({ ...config, executionEnabled: true }));

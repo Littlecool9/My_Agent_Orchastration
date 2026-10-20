@@ -6,6 +6,7 @@
 |---|---|
 | [Getting started](getting-started.md) | Prerequisites, keys, configuration, client setup and first-run validation |
 | [Daily guide](daily-guide.md) | Starting tasks, checking progress, resuming and delivery |
+| [Repository preferences](repository-preferences.md) | Reusable project defaults, short contracts, validation policy and snapshots |
 | [Advanced guide](advanced-guide.md) | Milestones, states, recovery budgets, verification and troubleshooting |
 | [Architecture](architecture.md) | Scheduler, isolation, memory guard, sessions and limitations |
 | [Protocol](protocol.md) | Versioned contracts, reports, feedback and plan updates |

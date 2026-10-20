@@ -9,6 +9,7 @@ The project is under active development. Worker execution currently requires **W
 ## Features
 
 - Versioned task contracts with explicit scope, decisions, acceptance criteria and evidence.
+- Per-repository preferences with automatic contract resolution, immutable snapshots and explicit validation policy.
 - Isolated Git worktrees, a new branch in the original checkout, or the current branch.
 - Persistent tasks and sessions for review, rework and interrupted-run recovery.
 - Incremental worker checks and independent supervisor verification.
@@ -52,6 +53,7 @@ For Codex, run `npm run connections`, merge the printed MCP table into your conf
 | Documentation index | [Index](docs/en/README.md) | [目录](docs/zh-CN/README.md) |
 | Installation and configuration | [Getting started](docs/en/getting-started.md) | [安装与配置](docs/zh-CN/getting-started.md) |
 | Everyday use | [Daily guide](docs/en/daily-guide.md) | [日常使用](docs/zh-CN/daily-guide.md) |
+| Project defaults and short contracts | [Repository preferences](docs/en/repository-preferences.md) | [仓库偏好](docs/zh-CN/repository-preferences.md) |
 | Recovery, milestones and troubleshooting | [Advanced guide](docs/en/advanced-guide.md) | [进阶使用](docs/zh-CN/advanced-guide.md) |
 | Runtime behavior and limitations | [Architecture](docs/en/architecture.md) | [架构与执行行为](docs/zh-CN/architecture.md) |
 | Task contracts and reports | [Protocol](docs/en/protocol.md) | [交接协议](docs/zh-CN/protocol.md) |

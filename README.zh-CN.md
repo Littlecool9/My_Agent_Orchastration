@@ -9,6 +9,7 @@
 ## 功能
 
 - 使用带版本的任务契约，明确范围、设计决定、验收标准与证据。
+- 按仓库保存项目偏好，自动生成完整合同和配置快照，并明确选择验证策略。
 - 支持独立 Git worktree、原目录新建分支或使用当前分支。
 - 持久化任务与会话，支持审查、返工和中断恢复。
 - worker 运行增量检查，主控独立选择并执行验收验证。
@@ -52,6 +53,7 @@ Codex 用户运行 `npm run connections`，将输出的 MCP 表合并到个人�
 | 文档目录 | [目录](docs/zh-CN/README.md) | [Index](docs/en/README.md) |
 | 安装与配置 | [首次接入](docs/zh-CN/getting-started.md) | [Getting started](docs/en/getting-started.md) |
 | 日常操作 | [日常使用](docs/zh-CN/daily-guide.md) | [Daily guide](docs/en/daily-guide.md) |
+| 项目默认值与简短合同 | [仓库偏好](docs/zh-CN/repository-preferences.md) | [Repository preferences](docs/en/repository-preferences.md) |
 | 恢复、多任务和排错 | [进阶使用](docs/zh-CN/advanced-guide.md) | [Advanced guide](docs/en/advanced-guide.md) |
 | 后台行为与限制 | [架构与执行行为](docs/zh-CN/architecture.md) | [Architecture](docs/en/architecture.md) |
 | 任务契约与报告 | [交接协议](docs/zh-CN/protocol.md) | [Protocol](docs/en/protocol.md) |

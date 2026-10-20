@@ -1,5 +1,9 @@
 # Task examples / 任务示例
 
+[`repository-preferences.json`](repository-preferences.json) is a portable request for `workflow_repository_config_update`. Replace its path, review its validation policy, and save reusable defaults once. Subsequent tasks can provide just ID, repository, goal and acceptance. See [repository preferences](../docs/en/repository-preferences.md).
+
+[`repository-preferences.json`](repository-preferences.json) 是 `workflow_repository_config_update` 的可移植请求示例。替换路径、审查验证策略后，一次保存共同偏好；后续任务只需填写 ID、仓库、目标和验收项，详见[仓库偏好](../docs/zh-CN/repository-preferences.md)。
+
 [`alpha-244.json`](alpha-244.json) demonstrates a complete versioned implementation contract: decisions, context, ordered steps, autonomy, acceptance criteria, incremental worker checks and independent supervisor checks.
 
 该文件展示完整的带版本实现契约，包括设计决定、上下文、步骤、自治边界、验收项、worker 增量检查和主控独立检查。

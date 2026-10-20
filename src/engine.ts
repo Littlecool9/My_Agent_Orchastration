@@ -4,14 +4,16 @@ import { Store } from './store.js';
 import { executionGuard, redact } from './config.js';
 import { prepareWorkspace, workspaceMode, workspaceKey, assertAllowedPaths, assertWorktree, fingerprint, changedFiles } from './worktree.js';
 import { runCommand, git } from './process.js';
-import type { Config, Task, TaskSpec, VerificationRun, SupervisorEvidenceInput } from './schema.js';
+import type { Config, Task, TaskSpec, VerificationRun, SupervisorEvidenceInput, RepositoryConfiguration, TaskInput, TaskPlanPatch, ReviewVerification } from './schema.js';
 import type { Worker } from './opencode.js';
-import { TaskSpecSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, type VerificationSelection, type Feedback } from './schema.js';
+import { TaskSpecSchema, TaskInputSchema, TaskPlanPatchSchema, ReviewVerificationSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, type VerificationSelection, type Feedback } from './schema.js';
+import { RepositoryProfiles, repositoryIdentity, resolveTaskInput, resourceLimits, assertResourceLimits } from './repository-profile.js';
 import { randomUUID } from 'node:crypto';
 import { taskContract, validateFeedback, validateReport, renderReport } from './protocol.js';
 
 export class Engine {
   readonly store: Store;
+  readonly profiles: RepositoryProfiles;
   private busy = new Set<string>();
   private preparingWorkspaces = new Set<string>();
   private running = new Set<string>();
@@ -19,6 +21,7 @@ export class Engine {
   private promises = new Map<string, Promise<void>>();
   constructor(readonly root: string, readonly config: Config, readonly env: NodeJS.ProcessEnv, readonly worker: Worker) {
     this.store = new Store(path.join(root, '.runtime/tasks'));
+    this.profiles = new RepositoryProfiles(root);
     for (const t of this.store.all()) if (['running', 'verifying'].includes(t.status)) {
       if (t.status === 'verifying') this.interruptVerification(t);
       t.status = 'interrupted'; t.lastError = 'Daemon stopped before completion. Inspect worktree and resume explicitly; no automatic replay.'; this.store.save(t);
@@ -28,12 +31,19 @@ export class Engine {
     if (this.busy.has(id)) throw new Error('Task has another operation in progress');
     this.busy.add(id); try { return await action(); } finally { this.busy.delete(id); }
   }
-  create(spec: TaskSpec): Task {
+  create(spec: TaskSpec, configuration?: RepositoryConfiguration): Task {
     spec = TaskSpecSchema.parse(spec);
     if (spec.planRevision !== 1) throw new Error('New tasks must start at planRevision=1');
     if (!this.config.providers[spec.provider]) throw new Error('Unknown provider');
+    assertResourceLimits(spec.resources, configuration?.limits ?? resourceLimits(this.config));
     for (const dep of spec.dependencies) { if (dep === spec.id) throw new Error('Self dependency'); this.store.get(dep); }
-    return this.store.create(spec);
+    return this.store.create(spec, configuration);
+  }
+  async createFromInput(input: TaskInput): Promise<Task> {
+    input = TaskInputSchema.parse(input);
+    const identity = await repositoryIdentity(input.repository); const profile = this.profiles.find(identity);
+    const { spec, configuration } = resolveTaskInput(input, identity, profile, this.config);
+    return this.create(spec, configuration);
   }
   private async dependencies(task: Task): Promise<void> {
     for (const id of task.spec.dependencies) {
@@ -250,40 +260,55 @@ export class Engine {
       return ref;
     });
   }
-  async review(id: string, decision: 'accept' | 'rework', rationale: string, evidence: string[], feedback?: Feedback): Promise<Task> {
+  async review(id: string, decision: 'accept' | 'rework', rationale: string, evidence: string[], feedback?: Feedback, verification?: ReviewVerification): Promise<Task> {
     return this.locked(id, async () => {
       const t = this.store.get(id); if (t.status !== 'awaiting_review') throw new Error('Task is not awaiting supervisor review');
       if (!rationale.trim() || !evidence.length) throw new Error('Supervisor review requires rationale and evidence references');
+      let reviewVerification;
+      if (verification) {
+        verification = ReviewVerificationSchema.parse(verification);
+        if (decision !== 'accept') throw new Error('Review-only verification is only valid for acceptance');
+        if (t.spec.verificationPolicy !== 'review_allowed') throw new Error('This task requires independent commands; review-only acceptance is not permitted');
+      }
       if (decision === 'accept') {
         if (!t.report || t.report.outcome !== 'ready_for_review' || t.report.planRevision !== t.spec.planRevision) throw new Error('Acceptance requires a current structured ready_for_review report');
         await assertWorktree(t); await assertAllowedPaths(t);
-        const selected = t.verificationSelection?.checks ?? t.spec.checks;
-        if (t.spec.mode === 'implement' && (!selected.length || t.checks.length !== selected.length || t.checks.some((c, index) => !c.passed || c.name !== selected[index]!.name))) throw new Error('All required independent checks must pass; run independent verification before acceptance');
-        if (!t.verifiedFingerprint || t.verifiedFingerprint !== await fingerprint(t)) throw new Error('Run independent verification on the current source before acceptance');
+        if (verification) {
+          t.verifiedFingerprint = await fingerprint(t); reviewVerification = { ...verification, sourceFingerprint: t.verifiedFingerprint };
+        } else {
+          const selected = t.verificationSelection?.checks ?? t.spec.checks;
+          if (t.spec.mode === 'implement' && (!selected.length || t.checks.length !== selected.length || t.checks.some((c, index) => !c.passed || c.name !== selected[index]!.name))) throw new Error('All required independent checks must pass; run independent verification before acceptance');
+          if (!t.verifiedFingerprint || t.verifiedFingerprint !== await fingerprint(t)) throw new Error('Run independent verification on the current source before acceptance');
+        }
         t.status = 'accepted';
       } else { if (!feedback) throw new Error('Rework requires criterion-linked structured feedback'); t.feedback = validateFeedback(t, feedback); t.status = 'needs_changes'; }
-      t.reviews.push({ decision, rationale, evidence, at: new Date().toISOString(), planRevision: t.spec.planRevision, ...(feedback ? { feedback } : {}) }); this.store.event(id, 'review', t.reviews.at(-1)); return this.store.save(t);
+      t.reviews.push({ decision, rationale, evidence, at: new Date().toISOString(), planRevision: t.spec.planRevision, ...(feedback ? { feedback } : {}), ...(reviewVerification ? { verification: reviewVerification } : {}) }); this.store.event(id, 'review', t.reviews.at(-1)); return this.store.save(t);
     });
   }
-  async updatePlan(id: string, expectedPlanRevision: number, input: TaskSpec, changeReason: string): Promise<Task> {
+  async updatePlan(id: string, expectedPlanRevision: number, input: TaskPlanPatch, changeReason: string, refreshRepositoryProfile = false): Promise<Task> {
     return this.locked(id, async () => {
       const t = this.store.get(id);
       if (['running', 'verifying', 'accepted', 'cancelled'].includes(t.status)) throw new Error(`Cannot update a plan in ${t.status}`);
       if (expectedPlanRevision !== t.spec.planRevision) throw new Error('Stale plan update; reread current contract');
-      const spec = TaskSpecSchema.parse(input);
+      input = TaskPlanPatchSchema.parse(input);
+      const identity = t.configuration?.identity ?? await repositoryIdentity(t.spec.repository);
+      const profile = refreshRepositoryProfile ? this.profiles.find(identity) : t.configuration?.profile;
+      const { spec, configuration } = resolveTaskInput({ ...input, planRevision: input.planRevision ?? expectedPlanRevision + 1 }, identity, profile, this.config, t);
       if (spec.planRevision !== expectedPlanRevision + 1) throw new Error('Plan revision must increase exactly by one');
       for (const key of ['id', 'contractVersion', 'repository', 'baseRef', 'fetchRemote', 'branch', 'provider', 'mode', 'dependencies'] as const)
         if (JSON.stringify(spec[key]) !== JSON.stringify(t.spec[key])) throw new Error(`Cannot change execution identity field ${key}; create a distinct task instead`);
       if (workspaceMode(spec) !== workspaceMode(t.spec)) throw new Error('Cannot change execution identity field workspaceMode; create a distinct task instead');
       if (!changeReason.trim()) throw new Error('Plan update requires a reason');
+      if (!this.config.providers[spec.provider]) throw new Error('Unknown provider');
       writeFileSync(path.join(this.store.dir(id), `plan-v${t.spec.planRevision}.json`), JSON.stringify(t.spec, null, 2));
       this.archiveLegacyVerification(t);
       if (['failed', 'interrupted', 'blocked'].includes(t.status)) t.recoveryPending = true;
-      t.spec = spec; t.status = t.worktree ? 'ready' : 'planned'; t.checks = [];
+      this.store.writeConfiguration(spec, configuration);
+      t.spec = spec; t.configuration = configuration; t.status = t.worktree ? 'ready' : 'planned'; t.checks = [];
       delete t.feedback; delete t.report; delete t.verifiedFingerprint; delete t.lastError; delete t.summary;
       delete t.verificationSelection;
       delete t.verificationRunId;
-      this.store.event(id, 'plan_updated', { planRevision: spec.planRevision, changeReason }); return this.store.save(t);
+      this.store.event(id, 'plan_updated', { planRevision: spec.planRevision, changeReason, refreshRepositoryProfile }); return this.store.save(t);
     });
   }
   async cancel(id: string): Promise<Task> {
@@ -322,10 +347,12 @@ export class Engine {
       provider: t.spec.provider, model: this.config.providers[t.spec.provider]?.model, worktree: t.worktree,
       workspaceMode: workspaceMode(t.spec), workspacePath: t.worktree, workspaceWarnings: t.workspaceWarnings ?? [],
       workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
+      verificationPolicy: t.spec.verificationPolicy ?? 'commands_required', acceptanceVerification: t.reviews.at(-1)?.verification?.mode,
+      resources: t.spec.resources, repositoryProfile: t.configuration?.profile ? { id: t.configuration.profile.value.id, revision: t.configuration.profile.value.revision, hash: t.configuration.profile.hash } : undefined,
       verificationRunId: t.verificationRunId, verificationHistory: t.verificationHistory ?? [], supervisorEvidence: t.supervisorEvidence ?? [],
       baseCommit: t.baseCommit, sessionID: t.sessionID, summary: t.summary?.slice(0, 2400), lastError: t.lastError,
       checks: t.checks, totalTokensReported: t.totalTokens, costReported: t.cost,
-      artifacts: ['task.json', 'events.jsonl', ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : []),
+      artifacts: ['task.json', 'events.jsonl', ...(t.configuration ? [`configuration-v${t.spec.planRevision}.json`] : []), ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : []),
         ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact)] };
   }
   artifact(id: string, name: string, offset = 0, length = 12000): unknown {

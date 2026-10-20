@@ -48,6 +48,15 @@ export const FeedbackSchema = z.object({
   findings: z.array(FindingSchema).min(1),
 }).strict();
 export type Feedback = z.infer<typeof FeedbackSchema>;
+export const ResourceSettingsSchema = z.object({
+  workerMemoryLimitMB: z.number().int().min(128).max(1048576).optional(),
+  taskTimeoutMinutes: z.number().min(1).max(1440).optional(),
+}).strict();
+export type ResourceSettings = z.infer<typeof ResourceSettingsSchema>;
+export const ReviewVerificationSchema = z.object({
+  mode: z.literal('review_only'), omittedCoverage: z.array(z.string().trim().min(1)).min(1),
+}).strict();
+export type ReviewVerification = z.infer<typeof ReviewVerificationSchema>;
 
 export const TaskSpecSchema = z.object({
   contractVersion: z.literal(1), planRevision: z.number().int().positive(),
@@ -67,8 +76,10 @@ export const TaskSpecSchema = z.object({
   constraints: z.array(z.string()).default([]), allowedPaths: z.array(z.string()).default([]),
   dependencies: z.array(z.string()).default([]), checks: z.array(CheckSchema).default([]),
   workerChecks: z.array(CheckSchema).default([]),
+  verificationPolicy: z.enum(['commands_required', 'review_allowed']).default('commands_required'),
+  resources: ResourceSettingsSchema.optional(),
 }).strict().superRefine((t, ctx) => {
-  if (t.mode === 'implement' && t.checks.length === 0)
+  if (t.mode === 'implement' && t.verificationPolicy === 'commands_required' && t.checks.length === 0)
     ctx.addIssue({ code: 'custom', message: 'Implementation tasks require at least one independent verification check.' });
   for (const [label, ids] of [['acceptance', t.acceptance.map(x => x.id)], ['steps', t.steps.map(x => x.id)], ['decisions', t.decisions.map(x => x.id)], ['checks', t.checks.map(x => x.name)], ['workerChecks', t.workerChecks.map(x => x.name)]] as const) {
     if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: `Duplicate ${label} identifiers` });
@@ -80,6 +91,46 @@ export const TaskSpecSchema = z.object({
   }
 });
 export type TaskSpec = z.infer<typeof TaskSpecSchema>;
+
+// Preferences contain reusable defaults; task identity and acceptance remain per-task inputs.
+export const TaskDefaultsSchema = z.object({
+  baseRef: TaskSpecSchema.shape.baseRef.optional(), fetchRemote: TaskSpecSchema.shape.fetchRemote,
+  branchPrefix: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_./-]*\/$/).optional(),
+  provider: TaskSpecSchema.shape.provider.removeDefault().optional(),
+  workspaceMode: TaskSpecSchema.shape.workspaceMode.removeDefault().optional(), mode: TaskSpecSchema.shape.mode.removeDefault().optional(),
+  nonGoals: TaskSpecSchema.shape.nonGoals.optional(), decisions: TaskSpecSchema.shape.decisions.optional(),
+  contextRefs: TaskSpecSchema.shape.contextRefs.optional(), steps: TaskSpecSchema.shape.steps.optional(), autonomy: TaskSpecSchema.shape.autonomy.optional(),
+  constraints: TaskSpecSchema.shape.constraints.removeDefault().optional(), allowedPaths: TaskSpecSchema.shape.allowedPaths.removeDefault().optional(),
+  checks: TaskSpecSchema.shape.checks.removeDefault().optional(), workerChecks: TaskSpecSchema.shape.workerChecks.removeDefault().optional(),
+  verificationPolicy: TaskSpecSchema.shape.verificationPolicy.removeDefault().optional(), resources: ResourceSettingsSchema.optional(),
+}).strict();
+export const TaskInputSchema = TaskDefaultsSchema.omit({ branchPrefix: true }).extend({
+  contractVersion: TaskSpecSchema.shape.contractVersion.optional(), planRevision: TaskSpecSchema.shape.planRevision.optional(),
+  id: TaskSpecSchema.shape.id, repository: TaskSpecSchema.shape.repository, goal: TaskSpecSchema.shape.goal,
+  title: TaskSpecSchema.shape.title.optional(), branch: TaskSpecSchema.shape.branch.optional(),
+  acceptance: TaskSpecSchema.shape.acceptance, mainBranchWarning: TaskSpecSchema.shape.mainBranchWarning,
+  dependencies: TaskSpecSchema.shape.dependencies.removeDefault().optional(),
+}).strict();
+export const TaskPlanPatchSchema = TaskInputSchema.partial();
+export type TaskInput = z.infer<typeof TaskInputSchema>;
+export type TaskPlanPatch = z.infer<typeof TaskPlanPatchSchema>;
+export const RepositoryPreferencesSchema = z.object({
+  defaults: TaskDefaultsSchema.default({}), limits: ResourceSettingsSchema.default({}),
+  requirements: z.object({ constraints: z.array(z.string().min(1)).default([]), verificationPolicy: z.literal('commands_required').optional() }).strict().default({ constraints: [] }),
+}).strict();
+export const RepositoryIdentitySchema = z.object({ commonGitDir: z.string().min(1), root: z.string().min(1) }).strict();
+export const RepositoryProfileSchema = z.object({
+  schemaVersion: z.literal(1), id: TaskSpecSchema.shape.id, revision: z.number().int().positive(),
+  repository: RepositoryIdentitySchema, preferences: RepositoryPreferencesSchema,
+}).strict();
+export type RepositoryPreferences = z.infer<typeof RepositoryPreferencesSchema>;
+export type RepositoryIdentity = z.infer<typeof RepositoryIdentitySchema>;
+export type RepositoryProfile = z.infer<typeof RepositoryProfileSchema>;
+export interface RepositoryConfiguration {
+  identity: RepositoryIdentity; profile?: { file: string; hash: string; value: RepositoryProfile };
+  sources: Record<string, 'builtin' | 'repository_default' | 'task' | 'repository_requirement' | 'previous_plan'>;
+  limits: Required<ResourceSettings>; overrides: TaskPlanPatch; previousPlanRevision?: number; resolvedAt: string;
+}
 export const WorkerReportSchema = z.object({
   contractVersion: z.literal(1), taskId: z.string(), planRevision: z.number().int().positive(),
   runId: z.string().uuid(), attempt: z.number().int().positive(),
@@ -105,7 +156,7 @@ export interface SupervisorEvidenceReference {
   id: string; artifact: string; kind: SupervisorEvidenceInput['kind']; summary: string;
   planRevision: number; runId?: string; sourceFingerprint: string; at: string;
 }
-export interface Review { decision: 'accept' | 'rework'; rationale: string; evidence: string[]; at: string; planRevision: number; feedback?: Feedback }
+export interface Review { decision: 'accept' | 'rework'; rationale: string; evidence: string[]; at: string; planRevision: number; feedback?: Feedback; verification?: ReviewVerification & { sourceFingerprint: string } }
 export interface Task {
   spec: TaskSpec; status: Status; revision: number; attempts: number; createdAt: string; updatedAt: string;
   worktree?: string; baseCommit?: string; sessionID?: string; runId?: string;
@@ -118,4 +169,5 @@ export interface Task {
   verificationSelection?: VerificationSelection;
   verificationRunId?: string; verificationHistory?: VerificationRunSummary[];
   supervisorEvidence?: SupervisorEvidenceReference[];
+  configuration?: RepositoryConfiguration;
 }

@@ -1,0 +1,24 @@
+{
+  "repository": "C:/path/to/project",
+  "id": "example-project",
+  "expectedRevision": 0,
+  "preferences": {
+    "defaults": {
+      "baseRef": "HEAD",
+      "provider": "deepseek",
+      "workspaceMode": "worktree",
+      "branchPrefix": "codex/",
+      "verificationPolicy": "review_allowed",
+      "resources": {
+        "workerMemoryLimitMB": 2048,
+        "taskTimeoutMinutes": 45
+      }
+    },
+    "requirements": {
+      "constraints": [
+        "Preserve existing source-author headers and line endings.",
+        "Keep comments concise and follow existing module boundaries."
+      ]
+    }
+  }
+}

@@ -10,13 +10,15 @@ Claude/GPT 主控决定计划；MCP 提交 JSON，Zod 校验后存储；程序�
 
 TaskSpec：contractVersion=1，planRevision 从 1 开始；id、repository、baseRef、branch、provider、mode、workspaceMode、dependencies 是执行身份字段。goal/nonGoals、decisions（含理由）、contextRefs、steps（前序依赖、fixed/adaptable）、autonomy、带稳定 ID 的 acceptance、constraints、allowedPaths 以及两组测试 workerChecks / checks 是工作约定。完整实例见 [examples/alpha-244.json](../../examples/alpha-244.json)；最终 Schema 以 [src/schema.ts](../../src/schema.ts) 为准。
 
+创建输入可少于完整 TaskSpec，只必填 `id`、`repository`、`goal` 和 `acceptance`。服务端读取仓库本地 profile，合并任务覆盖与内置默认值，保存完整合同及含 profile 内容/版本/哈希和来源的 `configuration-vN.json`。通过 `workflow_repository_config` 读取偏好，`workflow_repository_config_update` 明确修改，详见[仓库偏好](repository-preferences.md)。
+
 每次 dispatch 都生成 runId，加入 attempt 和程序解析出的 workspace.path/worktree/mode/baseCommit，写入 contract.json 及不会被覆盖的 contract-run-UUID.json。它是执行者本轮接到的契约。状态变化使用 revision，计划变化使用 planRevision；两者不能互换。
 
-TaskSpec 的 workerChecks 是 worker 增量命令；checks 是主控计划中的独立验证命令。实际执行契约将 checks 投影为 workerChecks，只向 worker 提供计划检查名称和待验收标记。旧任务缺少 workerChecks 时，worker 自选有界增量检查并将命令结果写入验收证据，不执行旧计划中的全量步骤。pending_supervisor 必须有主控检查配置支持；它不表示检查已通过，review accept 仍须本轮主控所选独立检查全部通过。
+TaskSpec 的 workerChecks 是 worker 增量命令；checks 是主控计划中的独立验证命令。实际执行契约将 checks 投影为 workerChecks，只向 worker 提供计划检查名称和待验收标记。旧任务缺少 workerChecks 时，worker 自选有界增量检查并将命令结果写入验收证据，不执行旧计划中的全量步骤。pending_supervisor 需要主控检查配置或 `review_allowed` 策略支持；它不表示检查已通过，最终须由主控选择验证或明确代码审查并提供证据。
 
 provider 缺省为 deepseek。workspaceMode 缺省为推荐的 worktree，也可 branch/current；主分支 current 需先展示并记录 mainBranchWarning。原目录模式要求干净检出并持有任务级目录占用，工作区分支和源码指纹保护与 worktree 相同。
 
-workflow_verify 可传 selection={strategy,rationale,checks,omittedCoverage}，策略包括 planned/targeted/affected/smoke/full/custom。未传时运行当前计划中的 checks；传入时仅执行本轮所选命令，选择记录不修改 TaskSpec 或 planRevision。implementation 至少有一条独立命令，验收检查所选结果和当前源码指纹，不再强制运行计划中的全部原有测试。完整测试只在主控判断需要或当前用户明确要求时运行。
+workflow_verify 可传 selection={strategy,rationale,checks,omittedCoverage}，策略包括 planned/targeted/affected/smoke/full/custom。未传时运行当前计划中的 checks；传入时仅执行本轮所选命令，选择记录不修改 TaskSpec 或 planRevision。默认 `verificationPolicy=commands_required` 要求独立命令在当前源码通过；`review_allowed` 允许主控明确选择仅代码审查，记录理由、证据、源码指纹及非空遗漏范围，不伪造检查通过。完整测试只在主控判断需要或当前用户明确要求时运行。
 
 workerMemoryLimitMB 是全局配置中的每 worker 提交内存上限，缺省 3072 MiB。Windows Job Object 在 OpenCode 恢复执行前绑定，普通子进程继承限制；内存/守护错误记录到 worker 工件和失败诊断。任务恢复沿用原会话与源码，不自动提高限额。
 
@@ -63,7 +65,7 @@ workflow_review decision=rework 必须同时传反馈：
 
 ## 修改计划
 
-workflow_plan_update 接收 id、expectedPlanRevision、完整新 spec 和 changeReason。新版本必须恰好 +1；不能在运行中/验证中/已验收/已取消时更新，不能改变执行身份。程序归档旧计划、清除旧反馈/报告/检查/验证指纹，保留工作树、执行会话、既有修改和尝试次数。下一次派发的最新契约覆盖旧消息的任务指令；有用的代码调查结果仍可复用。
+workflow_plan_update 接收 id、expectedPlanRevision、局部 spec 或完整新 spec，以及 changeReason。省略 planRevision 时自动 +1，显式传入也须恰好 +1。默认沿用任务冻结的 profile，只有 `refreshRepositoryProfile=true` 才采用当前偏好。不能在运行中/验证中/已验收/已取消时更新，不能改变执行身份。程序归档旧计划、清除旧反馈/报告/检查/验证指纹，保留工作树、执行会话、既有修改和尝试次数。下一次派发的最新契约覆盖旧消息的任务指令；有用的代码调查结果仍可复用。
 
 如果要改变基线、仓库或模型，建立不同任务并明确迁移，而不是把已有证据悄悄算到另一套执行身份上。attempts 保留所有派发的单调轮次；正常审查返工不设轮数上限。maxAttempts 默认 5，仅约束 failed/interrupted/blocked 后的累计恢复派发次数 recoveryAttempts，首次执行不计入。异常状态修改计划后仍需诊断反馈并消耗恢复额度；计划更新、正常完成和 daemon 重启均不重置该额度。达到恢复上限仍由主控诊断，不借改计划或重建相同任务绕过预算。
 

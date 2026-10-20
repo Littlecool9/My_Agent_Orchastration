@@ -12,13 +12,15 @@ The Claude/GPT supervisor owns the plan. MCP submits JSON, Zod validates it and 
 
 See the [complete example](../../examples/alpha-244.json); [src/schema.ts](../../src/schema.ts) is authoritative.
 
+The creation input can be shorter than `TaskSpec`: only `id`, `repository`, `goal` and `acceptance` are mandatory. The server reads the repository's local profile, merges task overrides and built-in defaults, then stores the full resolved contract and `configuration-vN.json` with profile content/revision/hash and provenance. `workflow_repository_config` reads preferences; `workflow_repository_config_update` explicitly updates them. See [repository preferences](repository-preferences.md).
+
 Every dispatch generates a `runId`, adds the attempt and resolved workspace path/mode/base commit, and writes `contract.json` plus immutable `contract-run-UUID.json`. This is the contract received for that run. State transitions use `revision`; plan changes use `planRevision`.
 
-`workerChecks` contains incremental worker commands; `checks` contains the supervisor's planned independent verification. In the dispatched contract, the worker-facing `checks` list is projected from `workerChecks`; supervisor checks are represented by names and pending-supervisor markers. Legacy tasks without worker checks choose bounded incremental commands and record results in acceptance evidence, rather than running old full-suite steps. `pending_supervisor` requires supervisor check configuration and never means a check has passed.
+`workerChecks` contains incremental worker commands; `checks` contains the supervisor's planned independent verification. In the dispatched contract, the worker-facing `checks` list is projected from `workerChecks`; supervisor checks are represented by names and pending-supervisor markers. Legacy tasks without worker checks choose bounded incremental commands and record results in acceptance evidence, rather than running old full-suite steps. `pending_supervisor` requires configured supervisor checks or a `review_allowed` policy, and never means a check has passed. The supervisor must resolve it with actual verification or explicit code-review evidence.
 
 The default provider is `deepseek`. `workspaceMode` defaults to recommended `worktree`, with `branch` and `current` also supported. Using `current` on a main branch requires a displayed and recorded `mainBranchWarning`. Original-checkout modes require a clean checkout and exclusive task occupancy, with the same branch and source-fingerprint protections as worktrees.
 
-`workflow_verify` accepts `selection={strategy,rationale,checks,omittedCoverage}`. Strategies are `planned`, `targeted`, `affected`, `smoke`, `full` and `custom`. Without selection, planned checks run. With selection, only those commands run; the selection does not mutate `TaskSpec` or `planRevision`. Implementation acceptance requires at least one independent command and checks the selected results against the current source fingerprint. Full verification is selected when risk or the current user request calls for it.
+`workflow_verify` accepts `selection={strategy,rationale,checks,omittedCoverage}`. Strategies are `planned`, `targeted`, `affected`, `smoke`, `full` and `custom`. Without selection, planned checks run. With selection, only those commands run; the selection does not mutate `TaskSpec` or `planRevision`. Default `verificationPolicy=commands_required` requires passing independent commands on current source. `review_allowed` permits explicit review-only acceptance with rationale, evidence, source fingerprint and nonempty omitted coverage, without recording fake check passes. Full verification is selected when risk or the current user request calls for it.
 
 Global `workerMemoryLimitMB` defaults to 3072 MiB committed memory per worker. Windows attaches the Job Object before OpenCode resumes execution, and ordinary descendants inherit it. Limit/guard failures appear in worker artifacts and diagnostics. Recovery retains source/session and does not automatically raise the limit.
 
@@ -67,7 +69,7 @@ The version must match the current plan and every referenced criterion must exis
 
 ## Plan updates
 
-`workflow_plan_update` accepts `id`, `expectedPlanRevision`, a complete new `spec` and `changeReason`. The plan version increases by exactly one. Updates are disallowed while running, verifying, accepted or cancelled, and cannot change execution identity.
+`workflow_plan_update` accepts `id`, `expectedPlanRevision`, a partial or complete `spec` and `changeReason`. Omitted planRevision becomes expected+1; an explicit version must also increase by exactly one. The frozen profile is retained unless `refreshRepositoryProfile=true`. Updates are disallowed while running, verifying, accepted or cancelled, and cannot change execution identity.
 
 The scheduler archives the old plan and clears obsolete feedback, reports, checks and verification fingerprints, while retaining workspace, session, changes and attempts. The next contract supersedes prior task instructions; useful investigation can still be reused.
 

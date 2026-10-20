@@ -74,11 +74,11 @@ test('guard setup errors fail closed and are separately diagnosable', async () =
   assert.match(workerExitError(f.report).message, /WORKER_MEMORY_GUARD_FAILED/);
 });
 
-test('an actual OpenCode startup memory failure is reported as a memory limit with preserved evidence', { timeout: 45000 }, async () => {
+for (const [hostLimit, taskLimit] of [[3072, 128], [128, 256]] as const) test(`OpenCode enforces the smaller host/task memory budget (${hostLimit}/${taskLimit} MiB) with preserved evidence`, { timeout: 45000 }, async () => {
   const f = fixture();
-  const config = ConfigSchema.parse({ executionEnabled: true, maxParallel: 1, maxAttempts: 3, taskTimeoutMinutes: 1, workerMemoryLimitMB: 128,
+  const config = ConfigSchema.parse({ executionEnabled: true, maxParallel: 1, maxAttempts: 3, taskTimeoutMinutes: 1, workerMemoryLimitMB: hostLimit,
     providers: { fixture: { baseURL: 'http://127.0.0.1:1/v1', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', contextLimit: 32768, outputLimit: 4096 } } });
-  const spec = TaskSpecSchema.parse({ ...contractFields, id: 'memory-native-' + Date.now(), title: 'Memory fixture', repository: f.root, baseRef: 'master', branch: 'fixture', provider: 'fixture', mode: 'investigate', goal: 'Offline memory fixture', acceptance: [{ id: 'AC-01', requirement: 'No model request' }], checks: [] });
+  const spec = TaskSpecSchema.parse({ ...contractFields, id: 'memory-native-' + Date.now(), title: 'Memory fixture', repository: f.root, baseRef: 'master', branch: 'fixture', provider: 'fixture', mode: 'investigate', goal: 'Offline memory fixture', acceptance: [{ id: 'AC-01', requirement: 'No model request' }], checks: [], resources: { workerMemoryLimitMB: taskLimit } });
   const task: Task = { spec, status: 'running', revision: 1, attempts: 1, runId: randomUUID(), worktree: f.root,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), checks: [], reviews: [], totalTokens: 0, cost: 0 };
   const worker = new OpenCodeWorker(ROOT, config, { ...process.env, FIXTURE_KEY: 'offline-fixture' });
