@@ -31,7 +31,7 @@ export async function callTool(engine: Engine, name: string, input: unknown, sig
     case 'workflow_config': return { projectRoot: engine.root, defaultProvider: DEFAULT_PROVIDER, defaultModel: engine.config.providers[DEFAULT_PROVIDER]?.model, testPolicy: { worker: 'incremental_only', supervisor: 'supervisor_selected' }, workerMemoryLimitMB: engine.config.workerMemoryLimitMB, memoryGuard: { scope: 'per_worker_process_tree', enforcement: 'windows_job_commit_limit' }, workspaceModes: ['worktree', 'branch', 'current'], executionEnabled: engine.config.executionEnabled, ...configStatus(engine.root, engine.config), maxParallel: engine.config.maxParallel, maxAttempts: engine.config.maxAttempts,
       attemptLimitScope: 'recovery_only', reworkLimit: null,
       maintenance: { idleShutdown: true },
-      guidance: { supervisorSkill: path.join(engine.root, 'skills/orchestrate-code/SKILL.md'), repositoryInstructions: path.join(engine.root, 'AGENT.md'),
+      guidance: { supervisorSkill: path.join(engine.root, 'skills/orchestrate-code/SKILL.md'), repositoryInstructions: path.join(engine.root, 'AGENTS.md'),
         updating: path.join(engine.root, 'docs/en/updating.md'),
         wait: { command: process.execPath, args: [path.join(engine.root, 'dist/src/cli.js'), 'wait', '<id>'] },
         update: { command: process.execPath, args: [path.join(engine.root, 'scripts/update.mjs')] } },

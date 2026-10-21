@@ -40,6 +40,6 @@ npm run update -- --pull
 
 ## Agent 从哪里了解用法
 
-维护本仓库时，公共正文为 [AGENT.md](../../AGENT.md)；`CLAUDE.md` 通过 `@AGENT.md` 导入，`AGENTS.md` 为使用该文件名的客户端提供发现入口。文件发现依据见 [Claude 导入说明](https://code.claude.com/docs/en/memory#import-additional-files)和 [Codex 指令发现](https://learn.chatgpt.com/docs/agent-configuration/agents-md)。
+维护本仓库时，公共正文统一维护在 [AGENTS.md](../../AGENTS.md)，`CLAUDE.md` 通过 `@AGENTS.md` 导入。文件发现依据见 [Claude 导入说明](https://code.claude.com/docs/en/memory#import-additional-files)和 [Codex 指令发现](https://learn.chatgpt.com/docs/agent-configuration/agents-md)。
 
 在其他仓库使用本工作流的主控读取安装后的 `orchestrate-code` Skill，其启动步骤和功能表覆盖 profile、路径前缀、资源上限、等待、工件、验证、返工和更新。仅通过 MCP 接入的主控可从 `workflow_config.guidance` 找到绝对路径和等待／更新命令。worker 则读取角色提示词、解析后的任务合同，以及目标仓库的规则文件。

@@ -6,7 +6,7 @@ description: Explicitly delegate a coding task or milestone to external OpenCode
 ## Start here
 
 1. Call `workflow_config` first. Its `projectRoot` is the orchestrator installation, while your current directory is the target coding repository. Follow the returned `guidance` paths when the workflow's usage is unclear.
-2. Read the target repository's `CLAUDE.md` and its local instruction references (including `AGENT.md` / `AGENTS.md`); if absent, read `AGENTS.md` or `AGENT.md`. Apply relevant module instructions too. The orchestrator's root `AGENT.md` is for maintaining the orchestrator, not a substitute for target project rules.
+2. Read the target repository's `CLAUDE.md` and its local instruction references (including `AGENTS.md`); if absent, read `AGENTS.md`. Apply relevant module instructions too. The orchestrator's root `AGENTS.md` is for maintaining the orchestrator, not a substitute for target project rules.
 3. Read `workflow_repository_config {repository}`. Initialize a missing profile with `workflow_repository_init {repository}`; do not interrupt the user for minimal bookkeeping. Inspect its defaults, requirements, effective limits and adjacent check recipes/scripts before inventing commands.
 4. For an existing task, read `workflow_status {id}` and its current contract before resuming. Otherwise create the plan, prepare, dispatch, wait, review actual code, independently verify, then accept or request rework.
 

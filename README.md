@@ -51,7 +51,7 @@ After setup, reopen Claude Code in your target repository and invoke:
 
 In Codex, invoke `$orchestrate-code` explicitly. See [installation and configuration](docs/en/getting-started.md) for manual setup, repair, conflicts and optional live validation.
 
-After local source changes or a new release, double-click `update.cmd` or run `npm run update`. Use `npm run update -- --check` to inspect installed instructions, and add `--pull` only to explicitly fast-forward remote source. See [updating](docs/en/updating.md). Repository maintainers start with [AGENT.md](AGENT.md); workflow users start with the [supervisor Skill](skills/orchestrate-code/SKILL.md).
+After local source changes or a new release, double-click `update.cmd` or run `npm run update`. Use `npm run update -- --check` to inspect installed instructions, and add `--pull` only to explicitly fast-forward remote source. See [updating](docs/en/updating.md). Repository maintainers start with [AGENTS.md](AGENTS.md); workflow users start with the [supervisor Skill](skills/orchestrate-code/SKILL.md).
 
 ## Documentation
 

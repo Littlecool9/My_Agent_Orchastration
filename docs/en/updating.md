@@ -40,6 +40,6 @@ Dependency/build failures leave local state intact and do not write a successful
 
 ## Agent entry points
 
-The shared repository guidance is [AGENT.md](../../AGENT.md). `CLAUDE.md` imports it with `@AGENT.md`, and `AGENTS.md` provides a discovery bridge for clients using that filename. See the official [Claude imports](https://code.claude.com/docs/en/memory#import-additional-files) and [Codex instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+The shared repository guidance is maintained in [AGENTS.md](../../AGENTS.md). `CLAUDE.md` imports it with `@AGENTS.md`. See the official [Claude imports](https://code.claude.com/docs/en/memory#import-additional-files) and [Codex instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 
 Supervisors working in other repositories read the installed `orchestrate-code` Skill. Its startup sequence/capability index covers profiles, literal allowed paths, resource limits, waiting, artifacts, verification, rework and updates. `workflow_config.guidance` provides absolute paths and wait/update commands for MCP-only discovery. Workers instead receive their role prompt and resolved task contract, and follow the target repository's instruction files.

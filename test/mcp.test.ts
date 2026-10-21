@@ -29,7 +29,9 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
     const response = await client.callTool({ name: 'workflow_config', arguments: {} });
     assert.equal(response.isError, undefined);
     const content = response.content as { type: string; text: string }[];
-    assert.equal(JSON.parse(content[0]!.text).executionEnabled, false);
+    const initialConfig = JSON.parse(content[0]!.text);
+    assert.equal(initialConfig.executionEnabled, false);
+    assert.equal(initialConfig.guidance.repositoryInstructions, path.join(root, 'AGENTS.md'));
     const repository = path.join(root, 'repository'); mkdirSync(repository);
     const initialized = await runCommand('git', ['init', '-b', 'master'], repository); assert.equal(initialized.code, 0, initialized.output);
     const initialResponse = await client.callTool({ name: 'workflow_repository_init', arguments: { repository } });

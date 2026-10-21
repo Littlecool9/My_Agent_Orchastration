@@ -49,7 +49,7 @@ function sourceFingerprint(root) {
     }
   };
   for (const dir of ['src', 'scripts', 'prompts', 'skills/orchestrate-code']) if (fs.existsSync(path.join(root, dir))) walk(dir);
-  for (const file of ['package.json', 'package-lock.json', 'AGENT.md', 'AGENTS.md', 'CLAUDE.md', 'workflow.config.json']) {
+  for (const file of ['package.json', 'package-lock.json', 'AGENTS.md', 'CLAUDE.md', 'workflow.config.json']) {
     if (fs.existsSync(path.join(root, file))) { hash.update(file + '\0'); hash.update(fs.readFileSync(path.join(root, file))); }
   }
   return hash.digest('hex');
