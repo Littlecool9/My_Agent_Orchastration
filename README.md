@@ -1,7 +1,5 @@
 # Local Agent Orchestrator
 
-**English** | [简体中文](README.zh-CN.md)
-
 A local MCP workflow that lets your Claude Code or Codex supervisor delegate coding work to OpenCode workers, then independently review and verify the result. Keep your existing supervisor model and subscription; workers use separately configured model APIs.
 
 The project is under active development. Worker execution currently requires **Windows**, where a Job Object enforces each worker's memory limit.
