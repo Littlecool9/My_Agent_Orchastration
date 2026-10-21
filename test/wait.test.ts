@@ -34,6 +34,15 @@ test('multiple-task wait returns when any task is blocked rather than waiting fo
   assert.equal(result.reason, 'attention'); assert.equal(result.tasks[1]!.status, 'needs_replan');
 });
 
+test('a reconciled integration is terminal for a blocking wait', async () => {
+  let reads = 0;
+  const result = await waitForTasks(['one'], async () => {
+    assert.equal(++reads, 1);
+    return [{ id: 'one', status: 'integrated', revision: 8 }];
+  }, { until: 'attention', after: {}, timeoutMs: 0 });
+  assert.equal(result.reason, 'attention'); assert.equal(result.tasks[0]!.status, 'integrated');
+});
+
 test('a cursor ahead of the initial snapshot remains a lower bound across heartbeats', async () => {
   let revision = 1;
   const result = await waitForTasks(['one'], async () => [{ id: 'one', status: 'verifying', revision: revision++ }],

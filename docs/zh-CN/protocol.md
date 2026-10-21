@@ -8,7 +8,7 @@ Claude/GPT 主控决定计划；MCP 提交 JSON，Zod 校验后存储；程序�
 
 ## 输入
 
-TaskSpec：contractVersion=1，planRevision 从 1 开始；id、repository、baseRef、branch、provider、mode、workspaceMode、dependencies 是执行身份字段。goal/nonGoals、decisions（含理由）、contextRefs、steps（前序依赖、fixed/adaptable）、autonomy、带稳定 ID 的 acceptance、constraints、allowedPaths 以及两组测试 workerChecks / checks 是工作约定。完整实例见 [examples/alpha-244.json](../../examples/alpha-244.json)；最终 Schema 以 [src/schema.ts](../../src/schema.ts) 为准。
+TaskSpec：contractVersion=1，planRevision 从 1 开始；id、repository、baseRef、branch、provider、mode、workspaceMode、dependencies 是执行身份字段。goal/nonGoals、decisions（含理由）、contextRefs、steps（前序依赖、fixed/adaptable）、autonomy、带稳定 ID 的 acceptance、constraints、allowedPaths 以及两组测试 workerChecks / checks 是工作约定。项目专用实例存放在各自的本地 repo profile；最终 Schema 以 [src/schema.ts](../../src/schema.ts) 为准。
 
 创建输入可少于完整 TaskSpec，只必填 `id`、`repository`、`goal` 和 `acceptance`。仓库本地 profile 缺失时，服务端先最小初始化且不保存本次任务选择，再合并任务覆盖与内置默认值，保存完整合同及含 profile 内容/版本/哈希和来源的 `configuration-vN.json`。`workflow_repository_init {repository}` 也提供直接的幂等初始化；`workflow_repository_config` 保持只读，`workflow_repository_config_update` 明确修改偏好，详见[仓库偏好](repository-preferences.md)。
 
@@ -31,6 +31,8 @@ workerMemoryLimitMB 是全局配置中的每 worker 提交内存上限，缺省 
 `workflow_verify_stop {id,reason}` 只中止验证，等待进程树退出后回到 `awaiting_review`。已完成检查保留；中断中的命令记录 `status=stopped`、`passed=false`、`exitCode=null`，不再启动后续检查。未完成源码一致性验证的轮次不能用于通过验收。停止与完成竞态时保留已完成结果，重复停止该轮无副作用。取消整个任务仍是终态。
 
 `workflow_evidence_add {id,entry}` 追加主控证据。`entry` 包含当前 `planRevision`、`kind=integration|verification|note`、摘要、非空验收项 ID 与证据引用，以及可选日志（最多 200,000 字符）。服务端记录独立工件、当前源码指纹、worker 运行身份及时间，并脱敏已配置密钥。未知验收项、旧计划版本、执行中的任务均拒绝记录。取消任务后允许追加，但不重新打开任务，也不授予独立验证通过状态。通过 `supervisorEvidence` 索引及 `workflow_artifact` 读取。
+
+终态 `integrated` 用于补记历史任务已经集成的交付事实：源提交已包含在后续任务的基线中。`integration` 字段与独立工件保留原状态、源/目标提交、原因及证据。它不补造验收记录、通过的检查或源码验证指纹，也不满足依赖调度所需的 `accepted` 条件。普通任务工具不能重新打开或取消它。
 
 ## 输出
 

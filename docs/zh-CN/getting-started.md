@@ -133,7 +133,7 @@ npm run probe -- --provider kimi --live
 
 ## 开工与重载配置
 
-按[日常使用](daily-guide.md)操作，派发前让主控读取 `workflow_config`。使用 alpha 草案前先看[示例说明](../../examples/README.md)，填写本地仓库路径，检查外部 issue 和工具链假设。它不是自动启动任务。
+按[日常使用](daily-guide.md)操作，派发前让主控读取 `workflow_config`。项目草案和检查脚本放在各自的[仓库偏好](repository-preferences.md)目录；创建任务前核对当前 issue 和工具链要求。保存草案不会自动启动任务。
 
 修改 Key 或配置后，在没有运行或验证任务时重启：
 
@@ -143,3 +143,5 @@ npm run start
 ```
 
 `workflow_config` 提供运行值 `executionEnabled`、磁盘值 `diskExecutionEnabled`、选用文件 `configFile`、`restartRequired` 和可能的 `configError`。重启保留任务、不自动派发；通常现有 MCP 连接可继续使用。
+
+- [更新已安装工作流](updating.md)：显式更新、本地／远端源码、已安装 Skill 同步及 agent 入口。

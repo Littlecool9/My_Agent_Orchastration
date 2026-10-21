@@ -45,20 +45,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 
 最后一行是这份模板的默认交付边界。如果某次要提交代码，可以在那次任务中明确允许 commit；push/PR 等也要按你的实际意图说明。执行 agent 的默认提示词不允许自行发布。
 
-**#244 的日常启动示例**，只在你决定真正开始它时发送：
-
-```text
-/orchestrate-code
-开始 alpha #244，使用 integrations/local/alpha-244.json 的任务草案。
-主控先核对最新 #244/#230，fetch 后从最新 origin/master 创建独立 worktree，记录实际基准提交。
-在该 worktree 读取适用的 AGENTS.md，并把最终计划写成带版本的任务契约。
-交给默认 DeepSeek 实现，只在关键决策时问我。
-你独立审查代码，按风险选择 Debug/Release、目标回归或全量验证并说明未覆盖范围；不通过就派回返工。
-不要 commit、push、创建 PR 或关闭 issue。
-```
-
-上述本地示例位于工作流安装目录，不在 alpha 根目录。若主控找不到，提供完整路径：
-`<工作流安装目录>/integrations/local/alpha-244.json`（先生成并填写本地仓库路径，见[示例说明](../../examples/README.md)）。
+项目专用草案放在 `skills/orchestrate-code/repositories.local/<id>/examples/`。主控先读取绑定的 profile，核对当前仓库规则和 issue 要求，再调整草案；本地检查脚本用 `profile://scripts/<file>` 引用。详见[仓库偏好](repository-preferences.md)。
 
 ## 3. 一个 milestone 怎么下发
 

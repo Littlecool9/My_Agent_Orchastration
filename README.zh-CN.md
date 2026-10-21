@@ -51,6 +51,8 @@ npm run setup -- --client both --dry-run
 
 Codex 用户通过 `$orchestrate-code` 显式调用。手动安装、修复、冲突处理和可选真实验证见[安装与配置](docs/zh-CN/getting-started.md)。
 
+本地源码变化或收到新版本后，双击 `update.cmd` 或运行 `npm run update`。`npm run update -- --check` 检查已安装指令，显式加 `--pull` 才拉取远端并快进，详见[更新工作流](docs/zh-CN/updating.md)。维护本仓库先读 [AGENT.md](AGENT.md)，在其他项目使用工作流先读[主控 Skill](skills/orchestrate-code/SKILL.md)。
+
 ## 文档
 
 | 内容 | 简体中文 | English |

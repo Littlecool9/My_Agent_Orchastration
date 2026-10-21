@@ -4,6 +4,43 @@ name: orchestrate-code
 description: Explicitly delegate a coding task or milestone to external OpenCode workers, then independently review their work and report results. Use when the user invokes this workflow.
 ---
 
+## Start here
+
+1. Call `workflow_config` first. Its `projectRoot` is the orchestrator installation, while your current directory is the target coding repository. Follow the returned `guidance` paths when the workflow's usage is unclear.
+2. Read the target repository's `CLAUDE.md` and its local instruction references (including `AGENT.md` / `AGENTS.md`); if absent, read `AGENTS.md` or `AGENT.md`. Apply relevant module instructions too. The orchestrator's root `AGENT.md` is for maintaining the orchestrator, not a substitute for target project rules.
+3. Read `workflow_repository_config {repository}`. Initialize a missing profile with `workflow_repository_init {repository}`; do not interrupt the user for minimal bookkeeping. Inspect its defaults, requirements, effective limits and adjacent check recipes/scripts before inventing commands.
+4. For an existing task, read `workflow_status {id}` and its current contract before resuming. Otherwise create the plan, prepare, dispatch, wait, review actual code, independently verify, then accept or request rework.
+
+## Capability index
+
+| Need | Tool or command and how to use it |
+|---|---|
+| Installation path, execution gate and provider settings | `workflow_config {}`; it also points to this guide, repository guidance and the update entry. |
+| Reusable project settings and hard limits | `workflow_repository_config {repository}`; worktrees share the binding. |
+| Minimal first-use profile | `workflow_repository_init {repository}`; only an absolute repository path is needed. |
+| Explicit persistent preferences | `workflow_repository_config_update {repository,id,expectedRevision,preferences}`; preserve unrelated preferences. |
+| A new task | `workflow_task_create {spec:{id,repository,goal,acceptance}}` plus task-specific scope/checks; inherited defaults are frozen. |
+| Workspace preparation | `workflow_prepare {id}`; records the actual base and selected workspace mode. |
+| Start or resume a worker | `workflow_dispatch {id,feedback?}`; recovery needs structured diagnostic feedback. |
+| Progress and revision cursor | `workflow_status {id}`; retain the returned `revision`. |
+| Short MCP wait | `workflow_wait {ids,after,timeoutMs}`; each request is limited to 25 seconds. |
+| Continuous/background wait | `node "<projectRoot>/dist/src/cli.js" wait <id>`; see the waiting instructions below. |
+| Changed files and actual code review | `workflow_diff {id}`, then read the indicated workspace files. |
+| Contract, reports, verification logs or evidence | `workflow_artifact {id,name,offset?,length?}`; use names from status and bounded excerpts. |
+| Independent verification | `workflow_verify {id,selection?}`; selection changes the check scope without a plan update. |
+| Stop only verification | `workflow_verify_stop {id,reason}`; retains the task/report and completed checks. |
+| Append supervisor integration/check notes | `workflow_evidence_add {id,entry}`; records testimony, not automatic acceptance. |
+| Accept or request rework | `workflow_review {id,decision,rationale,evidence,feedback?,verification?}`; obey the contract's verification policy. |
+| Change the agreed plan | `workflow_plan_update {id,expectedPlanRevision,spec,changeReason}`; currently invalidates old evidence. |
+| Stop the entire task | `workflow_cancel {id}`; terminal cancellation preserves edits and history. |
+| Refresh an installed workflow | `node "<projectRoot>/scripts/update.mjs" --check`, then the same command without `--check`; see `docs/en/updating.md`. |
+
+These are distinct operations: verification is asynchronous, cancelling a waiter only stops waiting, and `awaiting_review` is not acceptance. `integrated` records a historical delivery and does not satisfy the `accepted` dependency gate. Use available tool discovery if a listed MCP tool is not loaded; never invent a missing tool's behavior.
+
+## Scope and resource syntax
+
+`allowedPaths` currently matches literal repository-relative files and directory prefixes, such as `CMakeLists.txt` and `modules/prefab`. It does not support `*`, `**` or other glob syntax. Check the values before creation; the current API can otherwise defer a scope error until verification. An empty list permits all paths. Resources cannot exceed the effective machine/repository limits returned by `workflow_repository_config`; a numeric schema maximum is not the current execution budget.
+
 Keep the current Claude/GPT main conversation as planner, supervisor and final reviewer. External OpenCode workers perform implementation through the `agent-orchestrator` MCP tools. Do not change the main model, authentication, provider endpoint or subscription login.
 
 The workflow_config response includes projectRoot: use that path to find configuration, bundled examples and diagnostics; the client working directory remains the user's coding repository. Do not assume it is the workflow installation folder.
@@ -12,13 +49,13 @@ Keep repository-specific scripts in their owning repository when possible. Local
 
 Minimal initialization records repository identity and empty preferences only. Unknown validation/resource/style settings remain unset and inherit built-in defaults; it does not infer test commands, permit skipping tests, or persist the current task's choices. Read repository-owned rules as part of normal planning. Save additional long-term preferences only when their persistent applicability is clear from the user's instruction, preserving unrelated existing preferences. Use workflow_repository_config_update with the profile's returned ID/current revision (normally 1 after init). A task-specific override does not update the profile. Ask only about consequential task decisions that cannot be resolved normally; profile setup itself should not interrupt the task.
 
-Only use this workflow when explicitly invoked. Read `workflow_config` first. If execution is disabled, stay in planning/review mode. A stored example task is not an instruction to run it. The alpha #244 example is authorized only after the user reviews the workflow, supplies credentials and explicitly starts that task.
+Only use this workflow when explicitly invoked. Read `workflow_config` first. If execution is disabled, stay in planning/review mode. A stored example task is not an instruction to run it; dispatch requires the user's task instruction and configured credentials.
 
 Default new worker tasks to DeepSeek (provider=deepseek, configured deepseek-flash); use Kimi or another provider when the user selects it. Existing tasks retain their recorded provider/session; do not silently migrate their execution identity.
 
 ## Plan and investigate
 
-Read repository-root AGENTS.md and the relevant module AGENTS.md files. Use read-only investigator tasks for detailed exploration when useful; keep the main context focused on decisions, dependencies and evidence. The investigator can search/read files and use a narrow set of Git inspection commands; perform other needed read-only inspections yourself.
+Read the target repository's instruction entry and relevant module rules as described in Start here. Use read-only investigator tasks for detailed exploration when useful; keep the main context focused on decisions, dependencies and evidence. The investigator can search/read files and use a narrow set of Git inspection commands; perform other needed read-only inspections yourself.
 
 State the goal, acceptance criteria, scope, base branch, actual build/test commands and important decisions. Identify dependencies before parallelizing. Ask only about consequential product/design choices or missing information that blocks a sound implementation. Batch related questions. Honor any user-requested approval-before-code stage; do not treat elapsed time as approval.
 
@@ -34,7 +71,16 @@ Separate testing in the contract: workerChecks contains targeted incremental che
 
 Dispatch independent tasks in different directories up to the configured limit. Use `workflow_wait` with the last revision values for bounded waits; inspect changes instead of narrating repeated identical status. Keep full transcripts in the backend; retrieve report/log excerpts only when they resolve a specific question. Workers implement and run incremental checks only. They do not control supervisor acceptance or recursively orchestrate other workers.
 
-For a long shell wait, run node <projectRoot>/dist/src/cli.js wait <id> (or multiple IDs, up to eight). It blocks until any task needs supervisor attention, including review, replan, failure or cancellation. --until change waits for a revision change; --after <id>=<revision> resumes from a known cursor. --timeout-ms sets an overall limit (default 0 means unlimited). Output is JSON; timeout exits 2, Ctrl+C exits 130 and only stops waiting. Attention is not acceptance. The CLI reconnects read requests; it never dispatches work. It does not automatically wake a disconnected supervisor.
+For a long shell wait, use the built-in CLI instead of writing a watcher. Replace `<projectRoot>` with the value from `workflow_config`:
+
+```powershell
+node "<projectRoot>/dist/src/cli.js" wait <id>
+node "<projectRoot>/dist/src/cli.js" wait <id> --until change --after <id>=<revision>
+```
+
+When running in the installation directory, `npm run wait -- <id>` is equivalent. In a client with background-shell support, launch one waiter using that client's background-task option and use its completion notification; do not launch duplicate watchers. If background tasks are unavailable, keep using bounded `workflow_wait` calls with revision cursors.
+
+The CLI supports up to eight IDs and chains bounded backend reads in one process. Default `--until attention` returns when any task needs supervisor attention, including review, replan, failure or cancellation. `--until change` waits for a revision change; `--after <id>=<revision>` resumes a cursor. `--timeout-ms` sets the overall limit (default 0 is unlimited). It prints one JSON result: inspect `reason` and each task's status before choosing the next operation. Timeout exits 2; Ctrl+C exits 130 and only stops waiting. Attention is not acceptance. The CLI reconnects read requests and never dispatches work. It does not wake a disconnected supervisor.
 
 Workers use dedicated executor/investigator system prompts. Built-in build/plan/general/explore/scout are disabled; task/plan tools are denied. They keep local implementation/debugging autonomy but return `needs_replan` when a fixed decision, architecture boundary or scope needs to change. Do not forbid necessary local reasoning or turn every implementation choice into a supervisor round trip.
 

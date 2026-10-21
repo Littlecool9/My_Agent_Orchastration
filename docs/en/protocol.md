@@ -10,7 +10,7 @@ The Claude/GPT supervisor owns the plan. MCP submits JSON, Zod validates it and 
 
 `TaskSpec` uses `contractVersion=1` and `planRevision` starting at 1. Its execution identity consists of `id`, `repository`, `baseRef`, `branch`, `provider`, `mode`, `workspaceMode` and `dependencies`. The agreement includes goal/non-goals, decisions with rationale, context references, ordered steps with earlier-step dependencies and fixed/adaptable flexibility, autonomy, acceptance criteria with stable IDs, constraints, allowed paths and two check lists.
 
-See the [complete example](../../examples/alpha-244.json); [src/schema.ts](../../src/schema.ts) is authoritative.
+Project-specific examples belong in their local repository profile; [src/schema.ts](../../src/schema.ts) is authoritative.
 
 The creation input can be shorter than `TaskSpec`: only `id`, `repository`, `goal` and `acceptance` are mandatory. If missing, the server initializes a minimal local profile without persisting task choices, merges task overrides and built-in defaults, then stores the full resolved contract and `configuration-vN.json` with profile content/revision/hash and provenance. `workflow_repository_init {repository}` also provides idempotent initialization directly; `workflow_repository_config` stays read-only and `workflow_repository_config_update` explicitly updates preferences. See [repository preferences](repository-preferences.md).
 
@@ -33,6 +33,8 @@ Each verification gets a `verificationRunId`, a `verification-UUID.json` artifac
 `workflow_verify_stop {id,reason}` aborts only verification, waits for process-tree exit and returns the task to `awaiting_review`. Completed checks survive; an interrupted command has `status=stopped`, `passed=false` and `exitCode=null`. No later checks launch. A round without completed source validation cannot grant acceptance. A completed round wins a race with stop; repeated stops of that round are harmless. Whole-task cancellation remains terminal.
 
 `workflow_evidence_add {id,entry}` appends supervisor-supplied evidence. `entry` contains current `planRevision`, `kind=integration|verification|note`, a summary, nonempty criterion IDs and evidence references, and an optional log (at most 200,000 characters). The server records a unique artifact, current source fingerprint, worker run identity and timestamp, redacting configured secrets. Unknown criteria, stale plans and active execution are rejected. Recording is allowed after cancellation and does not reopen the task or grant independent verification. Inspect `supervisorEvidence` references and use `workflow_artifact` to read the records.
+
+The terminal status `integrated` records a historical delivery reconciliation: a source commit is included in a downstream task baseline. Its `integration` record and artifact retain the previous status, source/target commits, rationale and evidence. This does not create an acceptance review, passing checks or a verified source fingerprint, and it does not satisfy the `accepted` dependency gate. Ordinary task tools cannot reopen or cancel it.
 
 ## Output
 

@@ -133,7 +133,7 @@ This makes a small billable API request. It creates a local marker fixture, chec
 
 ## Start work and reload settings
 
-Follow the [daily guide](daily-guide.md). Have the supervisor read `workflow_config` before dispatching. For the alpha draft, read [example instructions](../../examples/README.md), set the local repository path and review external issue/toolchain assumptions. It is not an automatic startup task.
+Follow the [daily guide](daily-guide.md). Have the supervisor read `workflow_config` before dispatching. Keep project drafts and check helpers in their [repository profile](repository-preferences.md), and review current issue/toolchain assumptions before creating a task. Stored drafts never start work automatically.
 
 After editing keys or configuration, restart only when no task is running or verifying:
 
@@ -143,3 +143,5 @@ npm run start
 ```
 
 `workflow_config` exposes running `executionEnabled`, `diskExecutionEnabled`, selected `configFile`, `restartRequired` and any `configError`. Restart preserves tasks without dispatching them; normally existing MCP connections can continue.
+
+- [Updating installed workflows](updating.md): explicit local/remote updates, installed Skill synchronization and agent entry points.

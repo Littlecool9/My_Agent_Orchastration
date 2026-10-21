@@ -7,7 +7,8 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "setup:check": "node dist/src/cli.js setup-check",
-    "prepare:example:alpha": "node scripts/prepare-alpha-example.mjs",
+    "update": "node scripts/update.mjs",
+    "wait": "node dist/src/cli.js wait",
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
     "doctor": "node dist/src/cli.js doctor",

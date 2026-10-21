@@ -5,7 +5,7 @@ export interface WaitTask { id: string; status: Status; revision: number; [key: 
 export interface WaitOptions { until: 'attention' | 'change'; after: Record<string, number>; timeoutMs: number }
 export interface WaitRequest { ids: string[]; after: Record<string, number>; timeoutMs: number }
 export type WaitResult = { reason: 'attention' | 'changed' | 'timeout'; tasks: WaitTask[] };
-const attention = new Set<Status>(['awaiting_review', 'needs_changes', 'needs_replan', 'blocked', 'accepted', 'failed', 'cancelled', 'interrupted']);
+const attention = new Set<Status>(['awaiting_review', 'needs_changes', 'needs_replan', 'blocked', 'accepted', 'integrated', 'failed', 'cancelled', 'interrupted']);
 
 export function parseWaitArgs(args: string[]): { ids: string[]; options: WaitOptions } {
   const ids: string[] = []; const options: WaitOptions = { until: 'attention', after: {}, timeoutMs: 0 };

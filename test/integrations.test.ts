@@ -4,6 +4,7 @@ import { readFileSync, mkdirSync, mkdtempSync, cpSync, writeFileSync, existsSync
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { ROOT } from '../src/config.js';
+import { toolDefinitions } from '../src/tools.js';
 
 test('portable skill metadata and explicit-only client variants stay consistent', () => {
   const source = readFileSync(path.join(ROOT, 'skills/orchestrate-code/SKILL.md'), 'utf8');
@@ -18,6 +19,8 @@ test('portable skill metadata and explicit-only client variants stay consistent'
   const connection = JSON.parse(readFileSync(path.join(ROOT, 'integrations/claude.mcp.example.json'), 'utf8'));
   assert.equal(connection.mcpServers['agent-orchestrator'].command, 'node');
   assert.deepEqual(connection.mcpServers['agent-orchestrator'].args, ['C:/path/to/agent-orchestrator/dist/src/cli.js', 'mcp']);
+  const index = source.split('## Capability index')[1]?.split('## Scope and resource syntax')[0]; assert.ok(index);
+  for (const tool of toolDefinitions) assert.ok(index.includes(tool.name), `${tool.name} needs an agent-facing usage entry`);
 });
 
 test('generic integration preparation does not read or generate project examples', () => {
@@ -25,9 +28,11 @@ test('generic integration preparation does not read or generate project examples
   const root = mkdtempSync(path.join(scratch, 'integrations-'));
   for (const dir of ['scripts', 'skills', 'examples']) mkdirSync(path.join(root, dir), { recursive: true });
   cpSync(path.join(ROOT, 'scripts/prepare-integrations.mjs'), path.join(root, 'scripts/prepare-integrations.mjs'));
-  cpSync(path.join(ROOT, 'skills/orchestrate-code'), path.join(root, 'skills/orchestrate-code'), { recursive: true });
-  const template = readFileSync(path.join(ROOT, 'examples/alpha-244.json'), 'utf8');
-  writeFileSync(path.join(root, 'examples/alpha-244.json'), 'not even valid JSON');
+  cpSync(path.join(ROOT, 'skills/orchestrate-code'), path.join(root, 'skills/orchestrate-code'), {
+    recursive: true, filter: source => path.basename(source) !== 'repositories.local',
+  });
+  const template = '{"spec":{"goal":"Preserve a reviewed project draft"}}';
+  writeFileSync(path.join(root, 'examples/custom-task.json'), 'not even valid JSON');
   const prepare = () => execFileSync(process.execPath, [path.join(root, 'scripts/prepare-integrations.mjs')], { cwd: root, windowsHide: true });
   prepare();
   const local = path.join(root, 'integrations/local');
@@ -36,36 +41,11 @@ test('generic integration preparation does not read or generate project examples
   assert.deepEqual(connection.mcpServers['agent-orchestrator'].args, [path.join(root, 'dist/src/cli.js'), 'mcp']);
   assert.ok(readFileSync(path.join(local, 'codex.mcp.toml'), 'utf8').includes(path.join(root, 'dist/src/cli.js').replaceAll('\\', '/')));
   assert.equal(existsSync(path.join(root, 'integrations/claude.mcp.json')), false);
-  assert.equal(existsSync(path.join(local, 'alpha-244.json')), false);
-  writeFileSync(path.join(local, 'alpha-244.json'), template);
+  assert.equal(existsSync(path.join(local, 'custom-task.json')), false);
+  writeFileSync(path.join(local, 'custom-task.json'), template);
   prepare();
-  assert.equal(readFileSync(path.join(local, 'alpha-244.json'), 'utf8'), template);
-  assert.equal(readFileSync(path.join(root, 'examples/alpha-244.json'), 'utf8'), 'not even valid JSON');
+  assert.equal(readFileSync(path.join(local, 'custom-task.json'), 'utf8'), template);
+  assert.equal(readFileSync(path.join(root, 'examples/custom-task.json'), 'utf8'), 'not even valid JSON');
   assert.equal(readFileSync(path.join(root, 'integrations/claude/skills/orchestrate-code/SKILL.md'), 'utf8'),
     readFileSync(path.join(root, 'skills/orchestrate-code/SKILL.md'), 'utf8').replace('---\nname:', '---\ndisable-model-invocation: true\nname:'));
-});
-
-test('explicit alpha example preparation preserves reviewed local task settings', () => {
-  const scratch = path.join(ROOT, 'work/workflow-tests'); mkdirSync(scratch, { recursive: true });
-  const root = mkdtempSync(path.join(scratch, 'example-'));
-  for (const dir of ['scripts', 'examples']) mkdirSync(path.join(root, dir), { recursive: true });
-  cpSync(path.join(ROOT, 'scripts/prepare-alpha-example.mjs'), path.join(root, 'scripts/prepare-alpha-example.mjs'));
-  const template = readFileSync(path.join(ROOT, 'examples/alpha-244.json'), 'utf8');
-  writeFileSync(path.join(root, 'examples/alpha-244.json'), template);
-  const prepare = () => execFileSync(process.execPath, [path.join(root, 'scripts/prepare-alpha-example.mjs')], { cwd: root, windowsHide: true });
-  prepare();
-  const local = path.join(root, 'integrations/local');
-  const taskFile = path.join(local, 'alpha-244.json');
-  const task = JSON.parse(readFileSync(taskFile, 'utf8'));
-  for (const check of [...task.spec.checks, ...task.spec.workerChecks]) {
-    assert.equal(check.args[check.args.indexOf('-File') + 1], path.join(root, 'scripts/alpha-check.ps1').replaceAll('\\', '/'));
-  }
-  task.spec.repository = 'C:/my-project/alpha';
-  task.spec.goal = 'Retain a locally reviewed goal';
-  writeFileSync(taskFile, JSON.stringify(task));
-  prepare();
-  const regenerated = JSON.parse(readFileSync(taskFile, 'utf8'));
-  assert.equal(regenerated.spec.repository, task.spec.repository);
-  assert.equal(regenerated.spec.goal, task.spec.goal);
-  assert.equal(readFileSync(path.join(root, 'examples/alpha-244.json'), 'utf8'), template);
 });

@@ -38,6 +38,24 @@ async function fixture(overrides: Partial<typeof config> = {}) {
     checks: [{ name: 'actual-value', command: process.execPath, args: ['-e', "if(require('fs').readFileSync('value.txt','utf8') !== 'good\\n') process.exit(2)"], timeoutMinutes: 1 }] });
   engine.create(spec); return { root, repository, worker, engine, spec };
 }
+
+test('historical integration stays terminal without granting acceptance or dependency verification', async () => {
+  const { engine, spec } = await fixture(); const task = engine.store.get('one');
+  task.status = 'integrated';
+  task.integration = { previousStatus: 'cancelled', sourceCommit: 'source', targetTaskId: 'downstream', targetCommit: 'target',
+    rationale: 'Historical code included in a downstream baseline', evidence: ['git ancestry'], artifact: 'integration.json', at: new Date().toISOString() };
+  engine.store.save(task);
+  const summary = engine.summary(task) as { status: string; integration: Task['integration']; artifacts: string[] };
+  assert.equal(summary.status, 'integrated'); assert.deepEqual(summary.integration, task.integration);
+  assert.ok(summary.artifacts.includes('integration.json')); assert.equal(task.verifiedFingerprint, undefined);
+  await assert.rejects(engine.cancel('one'), /terminal/);
+  await assert.rejects(engine.dispatch('one'), /Cannot dispatch/);
+  await assert.rejects(engine.updatePlan('one', 1, { goal: 'Changed' }, 'Reopen'), /Cannot update/);
+  await assert.rejects(engine.verify('one'), /completed worker/);
+  await assert.rejects(engine.review('one', 'accept', 'Integrated', ['git ancestry']), /awaiting supervisor/);
+  engine.create({ ...spec, id: 'two', branch: 'workflow/two', dependencies: ['one'] });
+  await assert.rejects(engine.prepare('two'), /Dependency one is not accepted/);
+});
 async function until(engine: Engine, id: string, expected: string, timeout = 10000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const t = engine.store.get(id); if (t.status === expected) return t; await delay(20); }
@@ -134,13 +152,6 @@ test('missing API key prevents dispatch before any worker is called', async () =
   const f = await fixture(); await f.engine.prepare('one'); delete f.engine.env.FIXTURE_KEY;
   await assert.rejects(f.engine.dispatch('one'), /Missing FIXTURE_KEY/); assert.equal(f.worker.sessions.length, 0);
 });
-test('example #244 is valid, latest-master based and not automatically created', () => {
-  const example = JSON.parse(readFileSync(path.join(ROOT, 'examples/alpha-244.json'), 'utf8'));
-  const task = TaskSpecSchema.parse(example.spec); assert.equal(task.baseRef, 'origin/master'); assert.equal(task.fetchRemote, 'origin');
-  assert.equal(task.checks.length, 2); assert.equal(config.providers.fixture!.model, 'fixture');
-});
-
-
 test('a recorded infrastructure credit preserves monotonic attempt IDs and still enforces a finite retry budget', async () => {
   const { engine, worker } = await fixture({ maxAttempts: 1 });
   await engine.prepare('one'); worker.fail = true;

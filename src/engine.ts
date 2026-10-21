@@ -19,6 +19,7 @@ export class Engine {
   private running = new Set<string>();
   private verifying = new Map<string, AbortController>();
   private promises = new Map<string, Promise<void>>();
+  get idle(): boolean { return !this.busy.size && !this.preparingWorkspaces.size && !this.running.size && !this.verifying.size && !this.promises.size; }
   constructor(readonly root: string, readonly config: Config, readonly env: NodeJS.ProcessEnv, readonly worker: Worker) {
     this.store = new Store(path.join(root, '.runtime/tasks'));
     this.profiles = new RepositoryProfiles(root);
@@ -67,7 +68,7 @@ export class Engine {
       }
       const sharedKey = workspaceMode(t.spec) === 'worktree' ? undefined : workspaceKey(t.spec.repository);
       if (sharedKey && (this.preparingWorkspaces.has(sharedKey) || this.store.all().some(other =>
-        other.spec.id !== id && other.worktree && !['accepted', 'cancelled'].includes(other.status) && workspaceKey(other.worktree) === sharedKey)))
+        other.spec.id !== id && other.worktree && !['accepted', 'integrated', 'cancelled'].includes(other.status) && workspaceKey(other.worktree) === sharedKey)))
         throw new Error('Workspace is already reserved by another task; finish/cancel it or use a separate worktree');
       if (sharedKey) this.preparingWorkspaces.add(sharedKey);
       let prepared;
@@ -288,7 +289,7 @@ export class Engine {
   async updatePlan(id: string, expectedPlanRevision: number, input: TaskPlanPatch, changeReason: string, refreshRepositoryProfile = false): Promise<Task> {
     return this.locked(id, async () => {
       const t = this.store.get(id);
-      if (['running', 'verifying', 'accepted', 'cancelled'].includes(t.status)) throw new Error(`Cannot update a plan in ${t.status}`);
+      if (['running', 'verifying', 'accepted', 'integrated', 'cancelled'].includes(t.status)) throw new Error(`Cannot update a plan in ${t.status}`);
       if (expectedPlanRevision !== t.spec.planRevision) throw new Error('Stale plan update; reread current contract');
       input = TaskPlanPatchSchema.parse(input);
       const identity = t.configuration?.identity ?? await repositoryIdentity(t.spec.repository);
@@ -313,7 +314,7 @@ export class Engine {
   }
   async cancel(id: string): Promise<Task> {
     return this.locked(id, async () => {
-      const t = this.store.get(id); if (['accepted', 'cancelled'].includes(t.status)) throw new Error('Task is already terminal');
+      const t = this.store.get(id); if (['accepted', 'integrated', 'cancelled'].includes(t.status)) throw new Error('Task is already terminal');
       t.status = 'cancelled'; this.store.save(t); this.verifying.get(id)?.abort('Task cancelled'); await this.worker.cancel(id);
       await this.promises.get(id); this.store.event(id, 'cancelled', {}); return this.store.get(id);
     });
@@ -349,11 +350,11 @@ export class Engine {
       workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
       verificationPolicy: t.spec.verificationPolicy ?? 'commands_required', acceptanceVerification: t.reviews.at(-1)?.verification?.mode,
       resources: t.spec.resources, repositoryProfile: t.configuration?.profile ? { id: t.configuration.profile.value.id, revision: t.configuration.profile.value.revision, hash: t.configuration.profile.hash } : undefined,
-      verificationRunId: t.verificationRunId, verificationHistory: t.verificationHistory ?? [], supervisorEvidence: t.supervisorEvidence ?? [],
+      verificationRunId: t.verificationRunId, verificationHistory: t.verificationHistory ?? [], supervisorEvidence: t.supervisorEvidence ?? [], integration: t.integration,
       baseCommit: t.baseCommit, sessionID: t.sessionID, summary: t.summary?.slice(0, 2400), lastError: t.lastError,
       checks: t.checks, totalTokensReported: t.totalTokens, costReported: t.cost,
       artifacts: ['task.json', 'events.jsonl', ...(t.configuration ? [`configuration-v${t.spec.planRevision}.json`] : []), ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : []),
-        ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact)] };
+        ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact), ...(t.integration ? [t.integration.artifact] : [])] };
   }
   artifact(id: string, name: string, offset = 0, length = 12000): unknown {
     const dir = realpathSync(this.store.dir(id));

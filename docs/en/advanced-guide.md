@@ -41,20 +41,7 @@ Do not commit, push, open PRs or close issues.
 
 The last line defines this template's delivery boundary. If you want commits or publication, state that scope in the task. The worker's default prompt does not allow it to publish on its own.
 
-The [alpha example](../../examples/README.md) is specific to another project. Only start it after reviewing its current issues and local prerequisites:
-
-```text
-/orchestrate-code
-Start alpha #244 using the locally configured integrations/local/alpha-244.json draft.
-Reread #244/#230, fetch origin and use the latest origin/master; record the actual base commit.
-Read applicable repository rules and create a versioned contract.
-Delegate implementation to DeepSeek. Ask me only about key decisions.
-Independently review the code and select Debug/Release, targeted regression or full checks based on risk.
-Record omitted coverage and request rework on failure.
-Do not commit, push, open PRs or close issues.
-```
-
-The example is in the orchestrator installation, not the alpha checkout. Generate and edit the local copy first; use its absolute path if the supervisor cannot find it.
+Repository-specific drafts belong under `skills/orchestrate-code/repositories.local/<id>/examples/`. Read the bound profile, current repository rules and issue requirements before adapting a draft; use `profile://scripts/<file>` for local check helpers. See [repository preferences](repository-preferences.md).
 
 ## 3. Assign a milestone
 

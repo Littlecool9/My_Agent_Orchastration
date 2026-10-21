@@ -142,7 +142,11 @@ export const WorkerReportSchema = z.object({
   blockers: z.array(z.object({ criterionIds: z.array(Identifier), reason: z.string().min(1), evidence: z.array(z.string().min(1)).min(1), proposedChange: z.string().min(1) }).strict()),
 }).strict();
 export type WorkerReport = z.infer<typeof WorkerReportSchema>;
-export type Status = 'planned' | 'ready' | 'running' | 'verifying' | 'awaiting_review' | 'needs_changes' | 'needs_replan' | 'blocked' | 'accepted' | 'failed' | 'cancelled' | 'interrupted';
+export type Status = 'planned' | 'ready' | 'running' | 'verifying' | 'awaiting_review' | 'needs_changes' | 'needs_replan' | 'blocked' | 'accepted' | 'integrated' | 'failed' | 'cancelled' | 'interrupted';
+export interface IntegrationRecord {
+  previousStatus: Status; sourceCommit: string; targetTaskId: string; targetCommit: string;
+  rationale: string; evidence: string[]; artifact: string; at: string;
+}
 export interface CheckResult { name: string; exitCode: number | null; passed: boolean; log: string; finishedAt: string; status?: 'passed' | 'failed' | 'stopped' }
 export interface VerificationRunSummary {
   id: string; status: 'running' | 'passed' | 'failed' | 'stopped' | 'cancelled' | 'interrupted';
@@ -169,5 +173,6 @@ export interface Task {
   verificationSelection?: VerificationSelection;
   verificationRunId?: string; verificationHistory?: VerificationRunSummary[];
   supervisorEvidence?: SupervisorEvidenceReference[];
+  integration?: IntegrationRecord;
   configuration?: RepositoryConfiguration;
 }

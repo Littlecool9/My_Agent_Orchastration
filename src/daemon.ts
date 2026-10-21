@@ -24,6 +24,7 @@ async function alive(info: DaemonInfo, signal?: AbortSignal): Promise<boolean> {
 }
 export async function ensureDaemon(root: string, signal?: AbortSignal): Promise<DaemonInfo> {
   signal?.throwIfAborted();
+  if (existsSync(path.join(root, '.runtime/update.lock'))) throw new Error('Workflow update in progress; reconnect after it completes.');
   const current = readInfo(root); if (current && await alive(current, signal)) return current;
   const lock = path.join(runtime(root), 'launch.lock');
   let owner = false;
@@ -41,6 +42,7 @@ export async function ensureDaemon(root: string, signal?: AbortSignal): Promise<
   throw new Error('Daemon launch lock timed out. If no daemon is starting, remove .runtime/launch.lock and retry.');
 }
 export async function serveDaemon(root: string): Promise<Server> {
+  if (existsSync(path.join(root, '.runtime/update.lock'))) throw new Error('Workflow update in progress; daemon startup is deferred.');
   const env = loadEnv(root); const config = loadConfig(root);
   const previous = readInfo(root); if (previous && await alive(previous)) throw new Error('A daemon is already running');
   const token = randomBytes(32).toString('hex'); const worker = new OpenCodeWorker(root, config, env); const engine = new Engine(root, config, env, worker);
@@ -55,13 +57,18 @@ export async function serveDaemon(root: string): Promise<Server> {
   const server = createServer(async (req, res) => {
     const supplied = Buffer.from(req.headers.authorization ?? ''); const expected = Buffer.from(`Bearer ${token}`);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) { res.writeHead(401).end(); return; }
-    if (req.method === 'POST' && req.url === '/shutdown') { res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}'); void shutdown(); return; }
+    if (shuttingDown) { res.writeHead(503).end('Daemon is stopping'); return; }
+    if (req.method === 'POST' && req.url === '/shutdown') {
+      if (req.headers['x-orchestrator-idle-only'] === 'true' && !engine.idle) { res.writeHead(409).end('Workflow is busy; finish active operations before updating.'); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}'); void shutdown(); return;
+    }
     if (req.method !== 'POST' || req.url !== '/rpc') { res.writeHead(404).end(); return; }
     const disconnected = new AbortController();
     const onClose = () => { if (!res.writableEnded) disconnected.abort(new Error('Client disconnected')); };
     res.on('close', onClose);
     try {
       let body = ''; for await (const chunk of req) { body += chunk; if (body.length > 1024 * 1024) throw new Error('Request exceeds 1 MB'); }
+      if (shuttingDown) throw new Error('Daemon is stopping');
       const request = JSON.parse(body); const result = await callTool(engine, request.name, request.args, disconnected.signal);
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(redact(JSON.stringify({ result }), env));
     } catch (error) {
