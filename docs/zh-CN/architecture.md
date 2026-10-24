@@ -6,7 +6,7 @@
 
 - worker 只跑变更相关的增量测试（workerChecks）。主控根据风险、项目规模和耗时自主选择目标测试、受影响模块、冒烟、静态检查或全量，通过 workflow_verify 执行；不默认强制全量。主控须记录依据与未覆盖范围。
 - workerMemoryLimitMB 默认 3072（3 GiB），限制每个 OpenCode 及其正常创建的编译/测试后代进程的合计提交内存。Windows Job Object 从进程执行前绑定，达到内存限额时结束整组并记录原因；guard 退出也会清理后代。守护组件本身、主控和其他应用不计入该 Job。默认两个 worker 并行时，各自有 3 GiB 上限；该值不是整台电脑或所有 worker 的共享预算。
-- 新任务默认 DeepSeek deepseek-flash；Kimi 仍可显式选择，旧任务不自动切换。
+- 默认回退为 DeepSeek deepseek-flash；主控也可根据用户手工标签选择其他已配置模型，记录任务级理由，用户/仓库显式选择优先。新任务冻结模型配置和标签，旧任务不自动切换。见[模型标签、容量及报告补交协议](protocol.md)。
 - workspaceMode 支持 worktree（推荐）、branch（原目录新建分支）、current（使用当前分支）。直接修改主分支前，主控展示警告并把文字记入 mainBranchWarning，不额外索要批准。原目录模式要求干净检出；同一目录同时只允许一个任务占用。
 
 调整内存：在当前生效配置中设置 workerMemoryLimitMB（单位 MiB）并在无活动任务时重启 daemon。例如 3072 为每个 worker 默认 3 GiB。运行工件 .runtime/workers/<task-id>/memory-*.json 记录限额、峰值、PID 和退出原因；该 Job 限制的是提交内存，不等同于任务管理器 RSS 或整机内存。Windows 以外目前拒绝不带 guard 的启动。

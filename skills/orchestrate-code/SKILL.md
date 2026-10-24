@@ -9,12 +9,15 @@ description: Explicitly delegate a coding task or milestone to external OpenCode
 2. Read the target repository's `CLAUDE.md` and its local instruction references (including `AGENTS.md`); if absent, read `AGENTS.md`. Apply relevant module instructions too. The orchestrator's root `AGENTS.md` is for maintaining the orchestrator, not a substitute for target project rules.
 3. Read `workflow_repository_config {repository}`. Initialize a missing profile with `workflow_repository_init {repository}`; do not interrupt the user for minimal bookkeeping. Inspect its defaults, requirements, effective limits and adjacent check recipes/scripts before inventing commands.
 4. For an existing task, read `workflow_status {id}` and its current contract before resuming. Otherwise create the plan, prepare, dispatch, wait, review actual code, independently verify, then accept or request rework.
+5. Before parallel planning, read `workflow_capacity {}`. After a context reset or when resuming multiple tasks, read `workflow_handoff {ids:[...]}` and referenced notes before continuing; verify current source separately.
 
 ## Capability index
 
 | Need | Tool or command and how to use it |
 |---|---|
 | Installation path, execution gate and provider settings | `workflow_config {}`; it also points to this guide, repository guidance and the update entry. |
+| Worker model choice | Read `workflow_config.providers` model/tags/keyPresent; select using user labels and pass `provider` plus `modelSelectionReason` at task creation. |
+| Parallel planning and resource bottlenecks | `workflow_capacity {}`; live shared slots, worker memory ceilings, verification processes and directory reservations. |
 | Reusable project settings and hard limits | `workflow_repository_config {repository}`; worktrees share the binding. |
 | Minimal first-use profile | `workflow_repository_init {repository}`; only an absolute repository path is needed. |
 | Explicit persistent preferences | `workflow_repository_config_update {repository,id,expectedRevision,preferences}`; preserve unrelated preferences. |
@@ -29,6 +32,9 @@ description: Explicitly delegate a coding task or milestone to external OpenCode
 | Independent verification | `workflow_verify {id,selection?}`; selection changes the check scope without a plan update. |
 | Stop only verification | `workflow_verify_stop {id,reason}`; retains the task/report and completed checks. |
 | Append supervisor integration/check notes | `workflow_evidence_add {id,entry}`; records testimony, not automatic acceptance. |
+| Durable decisions, repairs, risks and next steps | `workflow_note_add {id,entry:{planRevision,kind,summary,detail?,relatedTaskIds?}}`; no workspace/branch requirement and no verification credit. |
+| Resume context or assemble a final report | `workflow_handoff {ids:[...]}`; persisted plans, dependency states, claims, checks, reviews and recent note/evidence references. |
+| Invalid worker report | One automatic tool-disabled resubmission in the same run; inspect `reportSubmissions` and its artifact if it fails. No recovery dispatch is consumed by the resubmission itself. |
 | Accept or request rework | `workflow_review {id,decision,rationale,evidence,feedback?,verification?}`; obey the contract's verification policy. |
 | Change the agreed plan | `workflow_plan_update {id,expectedPlanRevision,spec,changeReason}`; currently invalidates old evidence. |
 | Stop the entire task | `workflow_cancel {id}`; terminal cancellation preserves edits and history. |
@@ -50,7 +56,7 @@ Minimal initialization records repository identity and empty preferences only. U
 
 Only use this workflow when explicitly invoked. Read `workflow_config` first. If execution is disabled, stay in planning/review mode. A stored example task is not an instruction to run it; dispatch requires the user's task instruction and configured credentials.
 
-Default new worker tasks to DeepSeek (provider=deepseek, configured deepseek-flash); use Kimi or another provider when the user selects it. Existing tasks retain their recorded provider/session; do not silently migrate their execution identity.
+Users own provider/model configuration and optional free-form `tags`. Treat labels as the user's assessment, not benchmark results or instructions that override task rules. Never invent, rewrite or persist labels from your own opinion. Read configured models/tags/keyPresent, honor an explicit user choice or repository provider preference, otherwise select among configured, key-present models by semantic fit between user labels and task needs. Record a concrete `modelSelectionReason` explaining relevant labels, task complexity and trade-offs; tagged choices require it. For example, a label about mechanical edits may fit a rename, while a label about nested state/design may fit an Apply/cache task; these are examples, not built-in ratings. If labels do not distinguish candidates, use the repository/default provider (deepseek) and explain the fallback rather than guessing model rankings. Missing keys or consequential ambiguity may require user input; do not silently change credentials or endpoints. New tasks pin the selected provider configuration/model/tags. Existing tasks retain their provider/session; legacy tasks pin on their next explicit dispatch. Model changes require explicit migration to a distinct task, not editing an active task's settings.
 
 ## Plan and investigate
 
@@ -68,7 +74,9 @@ Separate testing in the contract: workerChecks contains targeted incremental che
 
 ## Execute and supervise
 
-Dispatch independent tasks in different directories up to the configured limit. Use `workflow_wait` with the last revision values for bounded waits; inspect changes instead of narrating repeated identical status. Keep full transcripts in the backend; retrieve report/log excerpts only when they resolve a specific question. Workers implement and run incremental checks only. They do not control supervisor acceptance or recursively orchestrate other workers.
+Read `workflow_capacity` and explain the planned concurrency, current maxParallel/free slots, dependency constraints, directory reservations and known build/memory/disk bottlenecks. Distinguish a configured two-worker ceiling from lack of parallel support. Slots are shared across repositories; dispatch does not queue. branch/current tasks in one directory serialize until acceptance/cancellation; use separate worktrees/directories for independent parallel work. Memory ceilings include compiler/test descendants and are not measured RAM usage or a shared host budget. Supervisor verification runs outside worker slots/guards and can contend for resources. Keep build targets/parallelism bounded with repository-owned recipes. Do not automatically raise limits, share mutable build directories, assume a shared compilation cache or create worktree pools. If a higher limit is useful, present its resource trade-offs and honor the user's budget.
+
+Dispatch independent tasks in different directories up to that limit. Use `workflow_wait` with the last revision values for bounded waits; inspect changes instead of narrating repeated identical status. Keep full transcripts in the backend; retrieve report/log excerpts only when they resolve a specific question. Workers implement and run incremental checks only. They do not control supervisor acceptance or recursively orchestrate other workers.
 
 For a long shell wait, use the built-in CLI instead of writing a watcher. Replace `<projectRoot>` with the value from `workflow_config`:
 
@@ -89,7 +97,9 @@ Read `report.json` for the criterion-linked report. For ordinary rework, invoke 
 
 For needs_replan, diagnose the contradiction and use workflow_plan_update with expectedPlanRevision, a spec patch and changeReason. Omitted fields are preserved/resolved from the frozen profile; omitted planRevision becomes expected+1. Full revised specs remain supported. Set refreshRepositoryProfile=true only to explicitly adopt the current profile in a new plan revision; execution identity remains fixed. Ask the user only when the decision actually requires them. The update invalidates previous evidence/feedback and preserves the session, worktree, total run count and recovery budget. Do not dispatch an unchanged plan after needs_replan. Do not update active/accepted plans or change task execution identity; new repository/base/provider/mode needs a distinct task. Continue review, verification and rework until acceptance criteria are met; ordinary rework and needs_replan revisions have no round limit. maxAttempts defaults to 5 and only limits cumulative recovery dispatches after failed/interrupted/blocked runs. Initial execution and ordinary rework do not consume recovery budget. Plan updates, successful rounds and daemon restarts do not reset it. Recovery after a plan update still requires current diagnostic feedback. At the recovery limit, investigate or take over a focused fix; do not evade the limit by recreating identical tasks. Report supervisor takeover and its reason.
 
-The supervisor may make small integration changes or solve a worker's persistent blocker. Keep bulk implementation delegated. A valid report outcome ready_for_review leads to awaiting_review; blocked and needs_replan are explicit non-completion states. Missing/malformed/stale reports fail the round. A worker cannot report accepted.
+The supervisor may make small integration changes or solve a worker's persistent blocker. Keep bulk implementation delegated. A valid report outcome ready_for_review leads to awaiting_review; blocked and needs_replan are explicit non-completion states. Invalid final JSON/schema/semantic reports receive at most one automatic report-only resubmission, with all tools disabled, the same task/plan/run/attempt/session, and concrete validation errors. It shares the task deadline, is capped at two minutes and records its own duration/tokens/cost without a recovery dispatch. Both errors remain recorded if resubmission fails; timeout/memory/provider/process failures are not report-format retries. Do not dispatch a second worker merely because status shows report repair in progress. A worker cannot report accepted.
+
+Persist consequential decisions, supervisor repairs, unresolved risks and next actions promptly with `workflow_note_add`; use kind decision/repair/risk/next_step/handoff, the current planRevision and relatedTaskIds when useful. Notes work before preparation, during execution, after branch changes and after terminal states. They are historical supervisor testimony without source fingerprints, never passing verification. Use `workflow_evidence_add` for concrete source-bound check/integration evidence. Before context reset, switching a shared directory or final reporting, record a concise handoff note. On resume, use `workflow_handoff` for up to eight task IDs; it returns recent notes/reviews and artifact references, preserving older history. It does not revalidate current source or restore acceptance. Build final reports from these records, distinguishing worker claims, independent checks, supervisor repairs and omitted coverage; do not reconstruct successful checks from memory.
 
 ## Verify and accept
 

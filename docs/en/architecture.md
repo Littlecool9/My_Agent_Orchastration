@@ -10,7 +10,7 @@ Workers run change-related incremental `workerChecks`. The supervisor chooses ta
 
 Set this value in the effective configuration and restart when no tasks are active. `.runtime/workers/<task-id>/memory-*.json` records limits, peaks, PIDs and exit reasons. Committed memory is different from RSS or total system usage. Non-Windows worker startup currently refuses to run without a guard.
 
-New tasks default to provider `deepseek`, configured with `deepseek-flash`. Select Kimi explicitly; existing tasks do not migrate automatically.
+The fallback provider is `deepseek`, configured with `deepseek-flash`. Supervisors may choose another configured model using user-authored tags and a recorded task-specific reason; explicit user/repository choices take priority. New tasks pin model configuration and labels; existing tasks do not migrate automatically. See [model labels, capacity and report resubmission](protocol.md#model-labels-and-parallel-capacity).
 
 `workspaceMode` supports `worktree` (recommended), `branch` (a new branch in the original checkout) and `current`. Before using a main branch directly, the supervisor displays a warning and records it in `mainBranchWarning`, without another approval step. Original-checkout modes require a clean checkout and exclusive task occupancy.
 

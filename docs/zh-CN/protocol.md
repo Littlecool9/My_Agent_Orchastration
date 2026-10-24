@@ -71,6 +71,24 @@ workflow_plan_update 接收 id、expectedPlanRevision、局部 spec 或完整新
 
 如果要改变基线、仓库或模型，建立不同任务并明确迁移，而不是把已有证据悄悄算到另一套执行身份上。attempts 保留所有派发的单调轮次；正常审查返工不设轮数上限。maxAttempts 默认 5，仅约束 failed/interrupted/blocked 后的累计恢复派发次数 recoveryAttempts，首次执行不计入。异常状态修改计划后仍需诊断反馈并消耗恢复额度；计划更新、正常完成和 daemon 重启均不重置该额度。达到恢复上限仍由主控诊断，不借改计划或重建相同任务绕过预算。
 
+## 模型标签与并发容量
+
+每个 provider 可配置可选的用户手工 `tags`（自由文本数组）。`workflow_config` 返回模型、标签及 Key 是否存在。主控按标签语义与任务需求选择，优先遵守用户显式选择和仓库 provider 偏好；标签是用户评价，不是内置排名，也不能授权修改凭据。带标签的模型选择必须提供任务级 `modelSelectionReason`。新任务在 `task.json.executionProvider` 冻结 provider 配置、模型和标签，只记录 Key 环境变量名称，不记录值。配置修改影响新任务；历史任务在下一次显式派发时冻结当时配置。计划修订保留快照，状态返回模型、标签、理由及 `modelConfigPinned`。
+
+`workflow_capacity {}` 返回 daemon 共享的 `maxParallel`、运行 worker、空闲槽位、各自内存上限、独立验证任务和目录占用。它不排队派发，也不测量实际内存。独立验证进程不受 worker 槽位和内存 Job 限制，仍可能竞争资源。branch/current 在接受或取消前占用同一目录，并行独立任务需不同目录。配置上限为 2 不等于功能只能支持 2，可配置范围为 1–8。构建并发、磁盘和缓存方案保留在目标仓库配置中。
+
+## 持久监督日志与恢复摘要
+
+`workflow_note_add {id,entry}` 记录不绑定源码的监督历史。entry 包含当前 `planRevision`、`kind=decision|repair|handoff|risk|next_step`、`summary`（最多 2,000 字符），可选 `detail`（20,000 字符）及 `relatedTaskIds`（最多 8 个已存在任务）。准备前、执行中、换分支后和终态都可追加。独立 `note-UUID.json` 工件含脱敏内容及时间，无源码指纹，不授予验证或验收通过。计划更新保留旧日志及其原版本。具体源码检查结果仍用 `workflow_evidence_add`。
+
+`workflow_handoff {ids:[...]}` 返回 1–8 个任务的恢复/报告提纲：目标与决策、依赖状态、关联验收项的 worker 自述、近期审查、最近验证及报告提交、最近 5 条日志和 5 条证据引用。明确返回遗漏数量，旧内容仍可按工件读取。它不检查当前源码、不重新验证旧证据、不自动合并分支栈，也不调度 milestone。及时记录重要修复和决策，换用共享目录前写下一步；上下文压缩后和最终报告前读取摘要，分别列明 worker 自测、独立验证和监督方陈述。
+
+## 一次自动补交报告
+
+模型完成一轮后，最终 JSON 语法、严格 Schema（包括额外字段）或语义契约校验失败，最多自动补交一次。在原 session/task/plan/run/attempt 中，把具体错误与当前契约交给工具全部禁用的 reporter；不能重新实现、执行检查或补造证据。补交仍经过相同运行身份、验收项与检查覆盖校验，不会自动接受任务。已知失败与证据不足必须如实保留。
+
+补交共享原任务截止时间，另有 120 秒上限；它本身不算一次恢复派发，也不重置预算。`reportSubmissions` 与 `report-submission-<runId>.json` 记录提交次数、状态、原始及补交校验错误、补交耗时、累计和补交独有 token/费用，失败补交同样记账。初次及补交响应保留在 `.runtime/workers/<id>/`。费用是供应商报告值，不是账单。取消、内存/进程终止、provider 错误及超时不走格式重试；补交再失败才进入正常诊断恢复。补交期间仍为 `running`，主控不要另行重派。
+
 ## OpenCode 兼容处理
 
 本机固定 1.19.3 的原生 format=json_schema 试验能产生 structured 结果，但后续 GET session messages 出现 OutputFormatJsonSchema 编码错误，影响恢复。v0.2 使用普通消息承载严格 JSON，应用进行完整 Schema 与语义一致性校验；不依赖该原生功能，也不修改 OpenCode 二进制。角色系统提示词与 JSON 输出要求都在真实 localhost 模拟测试中检查；真实模型是否遵守设计边界仍需首轮业务验收。

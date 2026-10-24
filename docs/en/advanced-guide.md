@@ -135,6 +135,12 @@ Read both diffs and new files. A completion claim is insufficient. Missing toolc
 
 ## 8. Change models or settings
 
+Users can add `"tags": ["mechanical edits", "low cost"]` to a configured provider entry in the effective configuration. These are examples to replace with your own assessments; the workflow supplies no model ratings. To offer multiple models from one service, add separate provider IDs using the appropriate key environment variable. The supervisor interprets your labels and records task-specific `modelSelectionReason`; explicit user/repository choices take priority. Without distinguishing labels it uses the repository/default provider, rather than inventing rankings. New tasks pin provider/model/tags; configuration edits affect new tasks only. Legacy tasks pin on their next explicit dispatch.
+
+Before parallel work, have the supervisor read `workflow_capacity` and state planned concurrency, slots, directory reservations and build/memory constraints. Worktrees do not remove the daemon ceiling or process-tree memory limits. Higher limits require an explicit resource decision.
+
+Record important decisions/repairs/risks/next steps with `workflow_note_add`. After context resets use `workflow_handoff` to recover persisted plans/history and artifact references across up to eight tasks, even after the original directory changes branches. This is a review/report outline, not current source validation. See the [protocol](protocol.md) for fields and limits.
+
 Choose the provider when creating a task and configure its key. Worker API usage is separate from supervisor subscriptions; a custom provider's reported `cost=0` does not mean free service.
 
 An existing task's provider and baseline are part of its execution identity and cannot be changed directly. Plan any migration explicitly, handling existing changes. Editing global model settings does not migrate a persisted session.

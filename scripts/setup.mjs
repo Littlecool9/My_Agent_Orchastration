@@ -99,7 +99,7 @@ async function main() {
     }
     console.log(`\nSetup complete. Backend checks passed; ${clients.length ? 'open a new ' + clients.join(' / ') + ' session and check MCP tools before invoking the skill.' : 'no client integration was requested.'}`);
     console.log(`Provider: ${options.provider}; model: ${provider.model}; executionEnabled: ${config.executionEnabled}. API connectivity has not been tested.`);
-    if (options.provider !== 'deepseek') console.log('New tasks still default to deepseek. Explicitly request Kimi when using this key.');
+    if (options.provider !== 'deepseek') console.log('The fallback provider is deepseek. Select this provider explicitly or add your own model tags for supervisor selection.');
     console.log('Project profiles and examples are configured separately. No task was dispatched.');
   } finally { rl?.close(); output.destroy(); }
 }
