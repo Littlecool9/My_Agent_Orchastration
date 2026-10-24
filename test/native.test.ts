@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from
 import path from 'node:path';
 import { ROOT } from '../src/config.js';
 import { OpenCodeWorker } from '../src/opencode.js';
-import { ConfigSchema, TaskSpecSchema, type Task } from '../src/schema.js';
+import { ConfigSchema, TaskSpecSchema, type Task, type ReportSubmission } from '../src/schema.js';
 import { contractFields, makeReport } from './fixtures.js';
 import { validateReport } from '../src/protocol.js';
 import { randomUUID } from 'node:crypto';
@@ -21,6 +21,7 @@ test('real Windows OpenCode performs a tool call through a local fake model, and
   let holdNextRequest = false; let onHeldRequest = () => {};
   const observedTools: string[][] = [];
   let roleObserved = false; let forbiddenToolsObserved = false;
+  let badReportOnce = true; let reporterObserved = false;
   const server = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw); completions++;
@@ -39,6 +40,8 @@ test('real Windows OpenCode performs a tool call through a local fake model, and
     observedTools.push((body.tools ?? []).map((t: any) => t.function?.name));
     const readTool = (body.tools ?? []).find((t: any) => t.function?.name === 'read');
     const messages: any[] = body.messages ?? [];
+    const isReporter = messages.some(m => m.role === 'system' && JSON.stringify(m.content).includes('workflow-reporter'));
+    if (isReporter) { reporterObserved = true; assert.equal((body.tools ?? []).length, 0, 'Report resubmission must expose no tools'); }
     const invalid = messages.some(m => m.role === 'assistant' && !(m.tool_calls?.length) &&
       !(typeof m.content === 'string' ? m.content.trim().length : Array.isArray(m.content) && m.content.some((p: any) => typeof p.text === 'string' && p.text.trim().length)));
     if (invalid) {
@@ -59,7 +62,9 @@ test('real Windows OpenCode performs a tool call through a local fake model, and
     const contract = matches.length ? JSON.parse(matches.at(-1)![1]!) : undefined;
     const report = contract ? { ...makeReport({ spec: { ...contract, id: contract.taskId }, runId: contract.runId, attempts: contract.attempt } as Task), acceptanceResults: contract.acceptance.map((c: any) => ({ id: c.id, status: 'met', evidence: ['marker.txt: native-fixture'] })) } : undefined;
     const toolName = toolCall ? 'read' : undefined;
-    const delta = toolName ? { role: 'assistant', tool_calls: [{ index: 0, id: `call_fixture_${completions}`, type: 'function', function: { name: toolName, arguments: JSON.stringify({ filePath: path.join(worktree, 'marker.txt') }) } }] } : { role: 'assistant', content: JSON.stringify(report) };
+    const reportText = badReportOnce && !toolName && !isReporter ? 'Completed the task; forgot the JSON report.' : JSON.stringify(report);
+    if (!toolName && !isReporter) badReportOnce = false;
+    const delta = toolName ? { role: 'assistant', tool_calls: [{ index: 0, id: `call_fixture_${completions}`, type: 'function', function: { name: toolName, arguments: JSON.stringify({ filePath: path.join(worktree, 'marker.txt') }) } }] } : { role: 'assistant', content: reportText };
     if (body.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       for (const item of [
@@ -78,7 +83,11 @@ test('real Windows OpenCode performs a tool call through a local fake model, and
   const task: Task = { spec, status: 'running', revision: 1, attempts: 1, runId: randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), worktree, checks: [], reviews: [], totalTokens: 0, cost: 0 };
   const worker = new OpenCodeWorker(ROOT, config, { ...process.env, FIXTURE_KEY: 'local-fixture-not-a-real-key' });
   try {
-    const first = await worker.run(task, id => { task.sessionID = id; }); assert.ok(validateReport(task, first.report).summary.length); assert.ok(task.sessionID); assert.ok(toolRequests >= 1);
+    const submissions: ReportSubmission[] = [];
+    const first = await worker.run(task, id => { task.sessionID = id; }, s => submissions.push(s)); assert.ok(validateReport(task, first.report).summary.length); assert.ok(task.sessionID); assert.ok(toolRequests >= 1);
+    assert.equal(reporterObserved, true); assert.equal(submissions.at(-1)!.status, 'repaired');
+    assert.equal(submissions.at(-1)!.submissions, 2); assert.ok(submissions.at(-1)!.repairTokens > 0);
+    assert.equal(task.attempts, 1);
     assert.equal(roleObserved, true); assert.equal(forbiddenToolsObserved, false);
     const text = JSON.stringify(first.transcript); assert.match(text, /native-fixture/);
     const session = task.sessionID; task.spec.planRevision = 2; task.runId = randomUUID(); task.attempts++;

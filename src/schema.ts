@@ -4,6 +4,7 @@ export const DEFAULT_PROVIDER = 'deepseek';
 
 export const ProviderSchema = z.object({
   baseURL: z.url(), model: z.string().min(1), apiKeyEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  tags: z.array(z.string().trim().min(1).max(120)).max(32).optional(),
   contextLimit: z.number().int().positive(), outputLimit: z.number().int().positive(),
   options: z.record(z.string(), z.unknown()).default({}),
 }).strict();
@@ -39,6 +40,27 @@ export const SupervisorEvidenceSchema = z.object({
   evidence: z.array(z.string().trim().min(1)).min(1), log: z.string().max(200000).optional(),
 }).strict();
 export type SupervisorEvidenceInput = z.infer<typeof SupervisorEvidenceSchema>;
+export const SupervisorNoteSchema = z.object({
+  planRevision: z.number().int().positive(),
+  kind: z.enum(['decision', 'repair', 'handoff', 'risk', 'next_step']),
+  summary: z.string().trim().min(1).max(2000), detail: z.string().max(20000).optional(),
+  relatedTaskIds: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/)).max(8).default([]),
+}).strict();
+export type SupervisorNote = z.infer<typeof SupervisorNoteSchema>;
+export interface SupervisorNoteReference {
+  id: string; artifact: string; planRevision: number; kind: SupervisorNote['kind']; summary: string;
+  relatedTaskIds: string[]; at: string;
+}
+export interface ReportSubmission {
+  status: 'passed' | 'repairing' | 'repaired' | 'failed'; submissions: number;
+  errors: { category: 'syntax' | 'schema' | 'semantic'; message: string }[];
+  startedAt: string; finishedAt?: string; repairDurationMs: number;
+  tokens: number; cost: number; repairTokens: number; repairCost: number;
+  failure?: string;
+}
+export interface ReportSubmissionReference extends ReportSubmission {
+  artifact: string; runId: string; planRevision: number; attempt: number;
+}
 export const FindingSchema = z.object({
   criterionIds: z.array(Identifier).min(1), description: z.string().min(1),
   evidence: z.array(z.string().min(1)).min(1), requestedChange: z.string().min(1),
@@ -64,6 +86,7 @@ export const TaskSpecSchema = z.object({
   repository: z.string().min(1), baseRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_./-]*$/),
   fetchRemote: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/).optional(),
   branch: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_./-]*$/), provider: z.string().min(1).default(DEFAULT_PROVIDER),
+  modelSelectionReason: z.string().trim().min(1).max(2000).optional(),
   workspaceMode: z.enum(['worktree', 'branch', 'current']).default('worktree'),
   mainBranchWarning: z.string().min(1).optional(),
   mode: z.enum(['investigate', 'implement']).default('implement'),
@@ -109,6 +132,7 @@ export const TaskInputSchema = TaskDefaultsSchema.omit({ branchPrefix: true }).e
   id: TaskSpecSchema.shape.id, repository: TaskSpecSchema.shape.repository, goal: TaskSpecSchema.shape.goal,
   title: TaskSpecSchema.shape.title.optional(), branch: TaskSpecSchema.shape.branch.optional(),
   acceptance: TaskSpecSchema.shape.acceptance, mainBranchWarning: TaskSpecSchema.shape.mainBranchWarning,
+  modelSelectionReason: TaskSpecSchema.shape.modelSelectionReason,
   dependencies: TaskSpecSchema.shape.dependencies.removeDefault().optional(),
 }).strict();
 export const TaskPlanPatchSchema = TaskInputSchema.partial();
@@ -165,6 +189,9 @@ export interface Task {
   spec: TaskSpec; status: Status; revision: number; attempts: number; createdAt: string; updatedAt: string;
   worktree?: string; baseCommit?: string; sessionID?: string; runId?: string;
   workspaceWarnings?: string[];
+  executionProvider?: z.infer<typeof ProviderSchema>;
+  reportSubmissions?: ReportSubmissionReference[];
+  supervisorNotes?: SupervisorNoteReference[];
   infrastructureRetryCredits?: number;
   recoveryAttempts?: number;
   recoveryPending?: boolean;

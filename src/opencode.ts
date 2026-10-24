@@ -6,15 +6,16 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { killTree } from './process.js';
 import { redact } from './config.js';
-import type { Config, Task } from './schema.js';
+import type { Config, Task, ReportSubmission } from './schema.js';
 import { reportJsonSchema, taskContract } from './protocol.js';
 import { promptAsync } from './opencode-session.js';
 import { repairSessionHistory } from './opencode-history.js';
 import { memoryGuardLaunch, readMemoryReport, workerExitError } from './memory-guard.js';
+import { submitReport } from './report-submission.js';
 
 export interface WorkerResult { report: unknown; transcript: unknown; tokens: number; cost: number }
 export interface Worker {
-  run(task: Task, onSession: (id: string) => void): Promise<WorkerResult>;
+  run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void): Promise<WorkerResult>;
   cancel(id: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -28,8 +29,8 @@ export function opencodeExecutable(root: string): { command: string; args: strin
   if (!existsSync(script)) throw new Error('OpenCode is not installed locally. Run npm ci first.');
   return { command: process.execPath, args: [script] };
 }
-export function workerEnv(root: string, config: Config, providerID: string, input: NodeJS.ProcessEnv, password: string, stateRoot: string): NodeJS.ProcessEnv {
-  const p = config.providers[providerID]; if (!p) throw new Error('Unknown provider');
+export function workerEnv(root: string, config: Config, providerID: string, input: NodeJS.ProcessEnv, password: string, stateRoot: string, pinned?: Config['providers'][string]): NodeJS.ProcessEnv {
+  const p = pinned ?? config.providers[providerID]; if (!p) throw new Error('Unknown provider');
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input)) {
     if (/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key) || /^(OPENAI|ANTHROPIC|CLAUDE|CODEX|GH_|GITHUB_|OPENCODE_)/i.test(key)) continue;
@@ -65,6 +66,7 @@ export function workerEnv(root: string, config: Config, providerID: string, inpu
     plugin: [], mcp: {}, permission, default_agent: 'executor',
     agent: { build: { disable: true }, plan: { disable: true }, general: { disable: true }, explore: { disable: true }, scout: { disable: true },
       executor: { mode: 'primary', description: 'Scoped implementation worker', prompt: readFileSync(path.join(root, 'prompts/executor.txt'), 'utf8'), permission: workerPermission, steps: 150 },
+      reporter: { mode: 'primary', description: 'Report-only resubmission without tools', prompt: readFileSync(path.join(root, 'prompts/reporter.txt'), 'utf8'), permission: { '*': 'deny' }, steps: 2 },
       investigator: { mode: 'primary', description: 'Read-only repository investigator', prompt: readFileSync(path.join(root, 'prompts/investigator.txt'), 'utf8'), permission, steps: 50 } },
   });
   return env;
@@ -85,13 +87,13 @@ export class OpenCodeWorker implements Worker {
   constructor(readonly root: string, readonly config: Config, readonly env: NodeJS.ProcessEnv) {}
   async repairSession(task: Task): Promise<WorkerResult> {
     if (!task.sessionID) throw new Error('Session repair requires an existing session');
-    return this.run(task, () => { throw new Error('Session repair must not create a session'); }, true);
+    return this.run(task, () => { throw new Error('Session repair must not create a session'); }, undefined, true);
   }
-  async run(task: Task, onSession: (id: string) => void, repairOnly = false): Promise<WorkerResult> {
+  async run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void, repairOnly = false): Promise<WorkerResult> {
     const stateRoot = path.join(this.root, '.runtime', 'workers', task.spec.id);
     mkdirSync(stateRoot, { recursive: true });
     const password = randomBytes(24).toString('hex');
-    const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot);
+    const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot, task.executionProvider);
     const port = await freePort(); const executable = opencodeExecutable(this.root);
     const memoryReport = path.join(stateRoot, 'memory-' + task.attempts + '-' + (repairOnly ? 'repair-' + Date.now() : task.runId) + '.json');
     const guarded = memoryGuardLaunch(this.root, memoryReport + '.launch.json', memoryReport, Math.min(task.spec.resources?.workerMemoryLimitMB ?? Infinity, this.config.workerMemoryLimitMB ?? 3072),
@@ -140,22 +142,43 @@ export class OpenCodeWorker implements Worker {
       before = repaired.transcript;
       if (repairOnly) return { report: { sessionID: entry.session, removed: repaired.removed, archiveFile }, transcript: before, tokens: 0, cost: 0 };
       const seen = new Set(before.map(m => m.info.id));
-      const model = this.config.providers[task.spec.provider]!;
+      const model = task.executionProvider ?? this.config.providers[task.spec.provider]!;
+      const deadline = Date.now() + Math.min(task.spec.resources?.taskTimeoutMinutes ?? Infinity, this.config.taskTimeoutMinutes) * 60000;
+      const usage = (messages: any[]) => {
+        const fresh = messages.filter(m => !seen.has(m.info.id) && m.info.role === 'assistant');
+        return { tokens: fresh.reduce((sum, m) => sum + (m.info.tokens?.input ?? 0) + (m.info.tokens?.output ?? 0) + (m.info.tokens?.reasoning ?? 0), 0),
+          cost: fresh.reduce((sum, m) => sum + (m.info.cost ?? 0), 0) };
+      };
       const { response, transcript } = await promptAsync(request, entry.session!, {
         model: { providerID: 'workflow', modelID: model.model }, agent: task.spec.mode === 'investigate' ? 'investigator' : 'executor',
         // OpenCode 1.19.3 native format=json_schema breaks persisted message reads
         // (OutputFormatJsonSchema Class encoding). Keep plain transport and enforce
         // the identical report schema in our own protocol, including on resume.
         parts: [{ type: 'text', text: workerPrompt(task) }],
-      }, { timeoutMs: Math.min(task.spec.resources?.taskTimeoutMinutes ?? Infinity, this.config.taskTimeoutMinutes) * 60000, signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
+      }, { timeoutMs: Math.max(1, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
       writeFileSync(path.join(stateRoot, `response-${task.attempts}.json`), redact(JSON.stringify(response, null, 2), { ...this.env, ...env }));
       if (response.info?.error) throw new Error(`Worker failed: ${JSON.stringify(response.info.error)}`);
       if (response.info?.finish && !['stop', 'end_turn'].includes(response.info.finish)) throw new Error(`Worker stopped without final completion: ${response.info.finish}`);
       const finalText = (response.parts ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
-      let report: unknown;
-      try { report = JSON.parse(finalText); } catch { throw new Error('Worker final output is not a strict JSON report; refusing free text as completion. Inspect response artifact.'); }
-      const fresh = transcript.filter(m => !seen.has(m.info.id) && m.info.role === 'assistant');
-      return { report, transcript, tokens: fresh.reduce((sum, m) => sum + (m.info.tokens?.input ?? 0) + (m.info.tokens?.output ?? 0) + (m.info.tokens?.reasoning ?? 0), 0), cost: fresh.reduce((sum, m) => sum + (m.info.cost ?? 0), 0) };
+      const initialUsage = usage(transcript);
+      const report = await submitReport(task, { text: finalText, ...initialUsage }, async diagnostic => {
+        entry.controller.signal.throwIfAborted();
+        if (Date.now() >= deadline) throw new Error('Task budget exhausted before report resubmission');
+        const repaired = await promptAsync(request, entry.session!, {
+          model: { providerID: 'workflow', modelID: model.model }, agent: 'reporter',
+          parts: [{ type: 'text', text: workerPrompt(task) + '\nREPORT_ONLY_RESUBMISSION\nValidation error:\n' + diagnostic + '\nSubmit only the corrected report using existing evidence. All tools are disabled.' }],
+        }, { timeoutMs: Math.min(120000, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
+        writeFileSync(path.join(stateRoot, `report-repair-response-${task.attempts}.json`), redact(JSON.stringify(repaired.response, null, 2), { ...this.env, ...env }));
+        const totals = usage(repaired.transcript);
+        return { text: (repaired.response.parts ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n'),
+          tokens: totals.tokens - initialUsage.tokens, cost: totals.cost - initialUsage.cost };
+      }, state => {
+        const totals = usage(lastTranscript);
+        const tracked = { ...state, ...totals, repairTokens: Math.max(0, totals.tokens - initialUsage.tokens), repairCost: Math.max(0, totals.cost - initialUsage.cost) };
+        writeFileSync(path.join(stateRoot, `report-submission-${task.runId}.json`), redact(JSON.stringify(tracked, null, 2), { ...this.env, ...env }));
+        onSubmission?.(tracked);
+      });
+      return { report, transcript: lastTranscript, ...usage(lastTranscript) };
     } catch (error) {
       writeFileSync(path.join(stateRoot, repairOnly ? 'history-repair-failure-' + task.attempts + '-' + Date.now() + '.json' : 'failure-' + task.attempts + '.json'), redact(JSON.stringify({
         taskId: task.spec.id, planRevision: task.spec.planRevision, runId: task.runId, attempt: task.attempts,

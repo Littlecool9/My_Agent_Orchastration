@@ -21,7 +21,8 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'dist/src/cli.js'), 'mcp'], stderr: 'pipe' });
   try {
     await client.connect(transport);
-    const listed = await client.listTools(); assert.equal(listed.tools.length, 17);
+    const listed = await client.listTools(); assert.equal(listed.tools.length, 20);
+    for (const name of ['workflow_capacity', 'workflow_note_add', 'workflow_handoff']) assert.ok(listed.tools.some(t => t.name === name));
     assert.ok(listed.tools.some(t => t.name === 'workflow_dispatch'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_verify_stop'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_evidence_add'));

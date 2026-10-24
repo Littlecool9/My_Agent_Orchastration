@@ -4,9 +4,9 @@ import { Store } from './store.js';
 import { executionGuard, redact } from './config.js';
 import { prepareWorkspace, workspaceMode, workspaceKey, assertAllowedPaths, assertWorktree, fingerprint, changedFiles } from './worktree.js';
 import { runCommand, git } from './process.js';
-import type { Config, Task, TaskSpec, VerificationRun, SupervisorEvidenceInput, RepositoryConfiguration, TaskInput, TaskPlanPatch, ReviewVerification } from './schema.js';
+import type { Config, Task, TaskSpec, VerificationRun, SupervisorEvidenceInput, RepositoryConfiguration, TaskInput, TaskPlanPatch, ReviewVerification, SupervisorNote } from './schema.js';
 import type { Worker } from './opencode.js';
-import { TaskSpecSchema, TaskInputSchema, TaskPlanPatchSchema, ReviewVerificationSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, type VerificationSelection, type Feedback } from './schema.js';
+import { TaskSpecSchema, TaskInputSchema, TaskPlanPatchSchema, ReviewVerificationSchema, VerificationSelectionSchema, SupervisorEvidenceSchema, SupervisorNoteSchema, type VerificationSelection, type Feedback } from './schema.js';
 import { RepositoryProfiles, repositoryIdentity, resolveTaskInput, resourceLimits, assertResourceLimits } from './repository-profile.js';
 import { randomUUID } from 'node:crypto';
 import { taskContract, validateFeedback, validateReport, renderReport } from './protocol.js';
@@ -36,9 +36,11 @@ export class Engine {
     spec = TaskSpecSchema.parse(spec);
     if (spec.planRevision !== 1) throw new Error('New tasks must start at planRevision=1');
     if (!this.config.providers[spec.provider]) throw new Error('Unknown provider');
+    if (this.config.providers[spec.provider]!.tags?.length && !spec.modelSelectionReason)
+      throw new Error('Tagged model selection requires modelSelectionReason explaining task fit using user-defined tags');
     assertResourceLimits(spec.resources, configuration?.limits ?? resourceLimits(this.config));
     for (const dep of spec.dependencies) { if (dep === spec.id) throw new Error('Self dependency'); this.store.get(dep); }
-    return this.store.create(spec, configuration);
+    return this.store.create(spec, configuration, this.config.providers[spec.provider]);
   }
   async createFromInput(input: TaskInput): Promise<Task> {
     input = TaskInputSchema.parse(input);
@@ -88,12 +90,15 @@ export class Engine {
       if (recovery && (t.recoveryAttempts ?? 0) >= this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0))
         throw new Error('Recovery attempt limit reached. Supervisor must investigate or take over a focused fix; do not recreate the same task to bypass the retry budget.');
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached; wait for an active task');
-      const p = this.config.providers[t.spec.provider]!;
+      const p = t.executionProvider ?? this.config.providers[t.spec.provider];
+      if (!p) throw new Error('Task provider is no longer configured; inspect its execution identity before resuming');
       if (!this.env[p.apiKeyEnv]) throw new Error(`Missing ${p.apiKeyEnv}; configure it locally and restart the daemon`);
       await this.dependencies(t); await assertWorktree(t);
       // Recheck after awaits so concurrent dispatches cannot oversubscribe.
       if (this.running.size >= this.config.maxParallel) throw new Error('Parallel execution limit reached');
       if (recovery) t.recoveryAttempts = (t.recoveryAttempts ?? 0) + 1;
+      // Legacy tasks pin the effective model on their next explicit dispatch.
+      t.executionProvider ??= structuredClone(p);
       delete t.recoveryPending;
       this.archiveLegacyVerification(t);
       t.feedback = feedback ?? t.feedback; t.status = 'running'; t.attempts++; t.runId = randomUUID(); t.checks = []; delete t.verifiedFingerprint; delete t.lastError; delete t.report;
@@ -109,9 +114,23 @@ export class Engine {
   }
   private async execute(task: Task): Promise<void> {
     const id = task.spec.id;
+    let usageRecorded = false;
     try {
       const result = await this.worker.run(task, session => {
         const current = this.store.get(id); current.sessionID = session; this.store.save(current);
+      }, state => {
+        const current = this.store.get(id);
+        if (current.runId !== task.runId) return;
+        const artifact = `report-submission-${task.runId}.json`;
+        current.reportSubmissions ??= [];
+        const previous = current.reportSubmissions.find(r => r.runId === task.runId);
+        current.totalTokens += state.tokens - (previous?.tokens ?? 0);
+        current.cost += state.cost - (previous?.cost ?? 0); usageRecorded = true;
+        const record = { ...state, artifact, runId: task.runId!, planRevision: task.spec.planRevision, attempt: task.attempts };
+        // Persist even on cancellation/interruption; accounting cannot grant completion.
+        writeFileSync(path.join(this.store.dir(id), artifact), redact(JSON.stringify(record, null, 2), this.env));
+        current.reportSubmissions = [...current.reportSubmissions.filter(r => r.runId !== task.runId), JSON.parse(redact(JSON.stringify(record), this.env))];
+        this.store.event(id, 'report_submission', { status: state.status, artifact, runId: task.runId }); this.store.save(current);
       });
       const current = this.store.get(id); if (current.status !== 'running') return;
       writeFileSync(path.join(this.store.dir(id), `raw-report-attempt-${current.attempts}.json`), redact(JSON.stringify(result.report ?? null, null, 2), this.env));
@@ -121,7 +140,7 @@ export class Engine {
       writeFileSync(path.join(this.store.dir(id), 'worker-report.md'), summary);
       writeFileSync(path.join(this.store.dir(id), 'transcript.json'), redact(JSON.stringify(result.transcript, null, 2), this.env));
       current.status = report.outcome === 'ready_for_review' ? 'awaiting_review' : report.outcome; current.report = report; current.summary = summary.slice(0, 6000);
-      current.totalTokens += result.tokens; current.cost += result.cost;
+      if (!usageRecorded) { current.totalTokens += result.tokens; current.cost += result.cost; }
       this.store.save(current); this.store.event(id, current.status, { report: 'report.json', planRevision: current.spec.planRevision, runId: current.runId });
     } catch (error) {
       const current = this.store.get(id); if (current.status !== 'running') return;
@@ -261,6 +280,57 @@ export class Engine {
       return ref;
     });
   }
+  async addNote(id: string, input: SupervisorNote): Promise<unknown> {
+    return this.locked(id, async () => {
+      const entry = SupervisorNoteSchema.parse(input); const t = this.store.get(id);
+      if (entry.planRevision !== t.spec.planRevision) throw new Error('Note refers to a stale planRevision');
+      for (const related of entry.relatedTaskIds) this.store.get(related);
+      const noteID = randomUUID();
+      const ref = { id: noteID, artifact: `note-${noteID}.json`, planRevision: entry.planRevision,
+        kind: entry.kind, summary: redact(entry.summary, this.env), relatedTaskIds: entry.relatedTaskIds, at: new Date().toISOString() };
+      writeFileSync(path.join(this.store.dir(id), ref.artifact), redact(JSON.stringify({ ...entry, ...ref, source: 'supervisor', grantsVerification: false }, null, 2), this.env));
+      t.supervisorNotes ??= []; t.supervisorNotes.push(ref);
+      this.store.event(id, 'supervisor_note_added', ref); this.store.save(t); return ref;
+    });
+  }
+  capacity(): unknown {
+    const tasks = this.store.all();
+    const runningWorkers = [...this.running].map(id => {
+      const t = this.store.get(id);
+      return { id, workspacePath: t.worktree, workerMemoryLimitMB: Math.min(t.spec.resources?.workerMemoryLimitMB ?? Infinity, this.config.workerMemoryLimitMB) };
+    });
+    return { maxParallel: this.config.maxParallel, runningWorkerCount: runningWorkers.length,
+      freeWorkerSlots: Math.max(0, this.config.maxParallel - runningWorkers.length), runningWorkers,
+      workerMemoryLimitMB: this.config.workerMemoryLimitMB,
+      runningWorkerBudgetMB: runningWorkers.reduce((sum, t) => sum + t.workerMemoryLimitMB, 0),
+      verificationTasks: [...this.verifying.keys()],
+      workspaceReservations: tasks.filter(t => t.worktree && !['accepted', 'integrated', 'cancelled'].includes(t.status))
+        .map(t => ({ id: t.spec.id, status: t.status, mode: workspaceMode(t.spec), path: t.worktree })),
+      notes: ['Slots are shared by all repositories in this daemon; dispatch does not queue.',
+        'Memory values are per-worker process-tree ceilings, not measured usage or a shared host budget.',
+        'Independent verification uses separate processes outside worker memory guards and worker slots.',
+        'branch/current reserve one directory until acceptance/cancellation; parallel tasks need distinct directories.',
+        'Free slots do not prove CPU, RAM, disk or build-cache capacity. Plan independent tasks and bounded builds first.'] };
+  }
+  handoff(ids: string[]): unknown {
+    return { generatedAt: new Date().toISOString(), currentSourceChecked: false,
+      instruction: 'Persisted history only. Read referenced artifacts for details and inspect current source before review/verification. Notes are supervisor testimony, never passing checks.',
+      tasks: ids.map(id => {
+        const t = this.store.get(id);
+        return { state: { id, status: t.status, revision: t.revision, planRevision: t.spec.planRevision, runId: t.runId,
+          attempts: t.attempts, recoveryAttempts: t.recoveryAttempts ?? 0, workspacePath: t.worktree, branch: t.spec.branch, baseCommit: t.baseCommit,
+          provider: t.spec.provider, model: t.executionProvider?.model, modelTags: t.executionProvider?.tags ?? [], modelSelectionReason: t.spec.modelSelectionReason,
+          summary: t.summary?.slice(0, 2400), lastError: t.lastError, checks: t.checks,
+          latestReportSubmission: t.reportSubmissions?.at(-1) ?? null }, contractArtifact: 'task.json', goal: t.spec.goal, nonGoals: t.spec.nonGoals, decisions: t.spec.decisions,
+          dependencies: t.spec.dependencies.map(dep => { const d = this.store.get(dep); return { id: dep, status: d.status, branch: d.spec.branch, baseCommit: d.baseCommit }; }),
+          acceptance: t.spec.acceptance.map(c => ({ ...c, workerResult: t.report?.acceptanceResults.find(r => r.id === c.id) })),
+          feedback: t.feedback, recentReviews: t.reviews.slice(-3),
+          latestWorkerReport: t.report ? { artifact: 'report.json', planRevision: t.report.planRevision, runId: t.report.runId, outcome: t.report.outcome } : null,
+          latestVerification: t.verificationHistory?.at(-1) ?? null,
+          recentNotes: t.supervisorNotes?.slice(-5) ?? [], notesOmitted: Math.max(0, (t.supervisorNotes?.length ?? 0) - 5),
+          recentEvidence: t.supervisorEvidence?.slice(-5) ?? [], evidenceOmitted: Math.max(0, (t.supervisorEvidence?.length ?? 0) - 5) };
+      }) };
+  }
   async review(id: string, decision: 'accept' | 'rework', rationale: string, evidence: string[], feedback?: Feedback, verification?: ReviewVerification): Promise<Task> {
     return this.locked(id, async () => {
       const t = this.store.get(id); if (t.status !== 'awaiting_review') throw new Error('Task is not awaiting supervisor review');
@@ -345,7 +415,9 @@ export class Engine {
       remainingRecoveryAttempts: Math.max(0, this.config.maxAttempts + (t.infrastructureRetryCredits ?? 0) - (t.recoveryAttempts ?? 0)),
       recoveryPending: !!t.recoveryPending || ['failed', 'interrupted', 'blocked'].includes(t.status),
       infrastructureRetryCredits: t.infrastructureRetryCredits ?? 0,
-      provider: t.spec.provider, model: this.config.providers[t.spec.provider]?.model, worktree: t.worktree,
+      provider: t.spec.provider, model: (t.executionProvider ?? this.config.providers[t.spec.provider])?.model,
+      modelTags: t.executionProvider?.tags ?? [], modelSelectionReason: t.spec.modelSelectionReason,
+      modelConfigPinned: !!t.executionProvider, worktree: t.worktree,
       workspaceMode: workspaceMode(t.spec), workspacePath: t.worktree, workspaceWarnings: t.workspaceWarnings ?? [],
       workerChecks: t.spec.workerChecks ?? [], plannedVerificationChecks: t.spec.checks.map(c => c.name), verificationSelection: t.verificationSelection,
       verificationPolicy: t.spec.verificationPolicy ?? 'commands_required', acceptanceVerification: t.reviews.at(-1)?.verification?.mode,
@@ -353,8 +425,11 @@ export class Engine {
       verificationRunId: t.verificationRunId, verificationHistory: t.verificationHistory ?? [], supervisorEvidence: t.supervisorEvidence ?? [], integration: t.integration,
       baseCommit: t.baseCommit, sessionID: t.sessionID, summary: t.summary?.slice(0, 2400), lastError: t.lastError,
       checks: t.checks, totalTokensReported: t.totalTokens, costReported: t.cost,
+      reportSubmissions: t.reportSubmissions ?? [], supervisorNoteCount: t.supervisorNotes?.length ?? 0,
+      recentSupervisorNotes: t.supervisorNotes?.slice(-5) ?? [],
       artifacts: ['task.json', 'events.jsonl', ...(t.configuration ? [`configuration-v${t.spec.planRevision}.json`] : []), ...(t.runId ? ['contract.json'] : []), ...(t.report ? ['report.json', 'worker-report.md', 'transcript.json'] : []),
-        ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact), ...(t.integration ? [t.integration.artifact] : [])] };
+        ...(t.verificationHistory ?? []).map(r => r.artifact), ...(t.supervisorEvidence ?? []).map(e => e.artifact),
+        ...(t.reportSubmissions ?? []).map(r => r.artifact), ...(t.supervisorNotes ?? []).map(n => n.artifact), ...(t.integration ? [t.integration.artifact] : [])] };
   }
   artifact(id: string, name: string, offset = 0, length = 12000): unknown {
     const dir = realpathSync(this.store.dir(id));

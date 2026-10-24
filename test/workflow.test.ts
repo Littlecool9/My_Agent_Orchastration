@@ -4,13 +4,79 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Engine } from '../src/engine.js';
-import { ConfigSchema, TaskSpecSchema, type Task, type VerificationRun } from '../src/schema.js';
+import { ConfigSchema, TaskSpecSchema, type Task, type VerificationRun, type ReportSubmission } from '../src/schema.js';
 import { workerEnv, type Worker } from '../src/opencode.js';
 import { ROOT, loadEnv } from '../src/config.js';
 import { git } from '../src/process.js';
 import { callTool } from '../src/tools.js';
 import { fingerprint } from '../src/worktree.js';
 import { contractFields, makeReport } from './fixtures.js';
+
+test('user model labels are exposed, require a selection reason and remain pinned after config changes', async () => {
+  const f = await fixture();
+  f.engine.config.providers = structuredClone(f.engine.config.providers);
+  f.engine.config.providers.fixture!.tags = ['适合机械性修改', '便宜'];
+  const cfg = await callTool(f.engine, 'workflow_config', {}) as any;
+  assert.deepEqual(cfg.providers.fixture.tags, ['适合机械性修改', '便宜']);
+  assert.throws(() => f.engine.create({ ...f.spec, id: 'tagged' }), /modelSelectionReason/);
+  const tagged = f.engine.create({ ...f.spec, id: 'tagged', modelSelectionReason: 'This is a mechanical fixture edit; fits the user label.' });
+  f.engine.config.providers.fixture!.model = 'new-model'; f.engine.config.providers.fixture!.tags = ['changed'];
+  const summary = f.engine.summary(tagged) as any;
+  assert.equal(summary.model, 'fixture'); assert.deepEqual(summary.modelTags, ['适合机械性修改', '便宜']); assert.equal(summary.modelConfigPinned, true);
+  const env = workerEnv(ROOT, f.engine.config, 'fixture', { FIXTURE_KEY: 'fixture-only' }, 'password', f.root, tagged.executionProvider);
+  assert.equal(JSON.parse(env.OPENCODE_CONFIG_CONTENT!).model, 'workflow/fixture');
+});
+
+test('capacity distinguishes worker slots, directory reservations and verification', async () => {
+  const f = await fixture({ maxParallel: 2 }); f.worker.hold = true;
+  await f.engine.prepare('one'); await f.engine.dispatch('one');
+  try {
+    const c = await callTool(f.engine, 'workflow_capacity', {}) as any;
+    assert.equal(c.maxParallel, 2); assert.equal(c.runningWorkerCount, 1); assert.equal(c.freeWorkerSlots, 1);
+    assert.equal(c.runningWorkerBudgetMB, 3072); assert.equal(c.workspaceReservations[0].id, 'one');
+    assert.deepEqual(c.verificationTasks, []);
+  } finally { await f.engine.cancel('one'); }
+});
+
+test('supervisor notes survive branch changes, restart and plan updates without granting verification', async () => {
+  const f = await fixture(); const task = await f.engine.prepare('one');
+  await git(task.worktree!, ['switch', '-c', 'other']);
+  const entry = { planRevision: 1, kind: 'repair', summary: 'Supervisor fixed ordering', detail: 'Original diagnosis and remaining risks', relatedTaskIds: [] };
+  const note = await callTool(f.engine, 'workflow_note_add', { id: 'one', entry }) as any;
+  assert.equal(f.engine.store.get('one').verifiedFingerprint, undefined);
+  assert.equal(f.engine.store.get('one').status, 'ready');
+  await assert.rejects(f.engine.addEvidence('one', { planRevision: 1, kind: 'note', summary: 'source evidence', criterionIds: ['AC-01'], evidence: ['source'] }), /branch changed/);
+  const restarted = new Engine(f.root, f.engine.config, f.engine.env, f.worker);
+  await restarted.updatePlan('one', 1, { goal: 'Updated task' }, 'Clarify task');
+  await assert.rejects(callTool(restarted, 'workflow_note_add', { id: 'one', entry }), /stale/);
+  for (let i = 0; i < 6; i++) await callTool(restarted, 'workflow_note_add', { id: 'one', entry: { ...entry, planRevision: 2, summary: `Next ${i}` } });
+  const handoff = await callTool(restarted, 'workflow_handoff', { ids: ['one'] }) as any;
+  assert.equal(handoff.currentSourceChecked, false); assert.equal(handoff.tasks[0].recentNotes.length, 5);
+  assert.equal(handoff.tasks[0].notesOmitted, 2); assert.equal(handoff.tasks[0].goal, 'Updated task');
+  assert.match(JSON.stringify(restarted.artifact('one', note.artifact)), /Original diagnosis/);
+  const persisted = restarted.store.get('one'); persisted.status = 'accepted'; restarted.store.save(persisted);
+  await callTool(restarted, 'workflow_note_add', { id: 'one', entry: { ...entry, planRevision: 2 } });
+  assert.equal(restarted.store.get('one').status, 'accepted');
+});
+
+test('report resubmission accounting is persisted once on success and failure without consuming recovery', async () => {
+  for (const fail of [false, true]) {
+    const f = await fixture();
+    f.engine.worker.run = async (t, session, observe) => {
+      session('same-session');
+      const state: ReportSubmission = { status: 'repairing', submissions: 1, errors: [{ category: 'syntax', message: 'free text' }],
+        startedAt: new Date().toISOString(), repairDurationMs: 0, tokens: 10, cost: 1, repairTokens: 0, repairCost: 0 };
+      observe!(state); observe!({ ...state, submissions: 2, status: fail ? 'failed' : 'repaired', tokens: 13, cost: 1.2, repairTokens: 3, repairCost: 0.2 });
+      if (fail) throw new Error('second report failed');
+      return { report: makeReport(t), transcript: [], tokens: 13, cost: 1.2 };
+    };
+    await f.engine.prepare('one'); await f.engine.dispatch('one');
+    const t = await until(f.engine, 'one', fail ? 'failed' : 'awaiting_review');
+    assert.equal(t.totalTokens, 13); assert.equal(t.cost, 1.2); assert.equal(t.attempts, 1); assert.equal(t.recoveryAttempts, undefined);
+    assert.equal(t.reportSubmissions!.length, 1); assert.equal(t.reportSubmissions![0]!.repairTokens, 3);
+    assert.ok((f.engine.summary(t) as any).artifacts.includes(t.reportSubmissions![0]!.artifact));
+  }
+});
 
 const scratch = path.join(ROOT, 'work/workflow-tests'); mkdirSync(scratch, { recursive: true });
 const config = ConfigSchema.parse({ executionEnabled: true, maxParallel: 1, maxAttempts: 2, taskTimeoutMinutes: 5,
