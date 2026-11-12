@@ -42,12 +42,12 @@ profile 写入编排器安装目录的 `skills/orchestrate-code/repositories.loc
 
 ## 默认值与始终适用的要求
 
-- `defaults`：基线/fetch、分支前缀、provider、工作区模式、任务模式、重复的非目标、决策、上下文引用、步骤、自治约定、constraints、allowedPaths、worker/主控检查、验证策略和资源设置。
+- `defaults`：基线/fetch、分支前缀、provider、工作区模式、任务模式、重复的非目标、决策、上下文引用、步骤、自治约定、constraints、allowedPaths、worker/主控检查、验证策略、资源设置，以及 `environment`（给 worker 和验证命令用的非机密环境变量，例如 `{"VCPKG_ROOT":"D:/vcpkg","PATH":"D:/tools/bin;${PATH}"}`）。
 - `requirements.constraints`：始终追加并去重；任务替换默认 constraints 时也保留。它们属于合同指令，沿用现有任务约束的审查与协作边界。
 - `requirements.verificationPolicy=commands_required`：禁止任务降低为仅代码审查验收。
-- `limits`：仓库的 `workerMemoryLimitMB`、`taskTimeoutMinutes` 上限；机器配置同时作为硬上限。任务/默认值超过两者较小值时拒绝，未指定资源时采用实际限额。worker 启动和整轮执行遵守任务与当前机器预算的较小值；这些设置没有为主控验证命令新增内存守护。
+- `limits`：仓库的 `workerMemoryLimitMB`、`taskTimeoutMinutes`、`workerSteps`、`tokenBudget` 上限；内存、时间和步数（`maxWorkerSteps`）同时以机器配置为硬上限。任务/默认值超过两者较小值时拒绝。未指定内存和时间时采用实际限额，未指定 `workerSteps` 时采用机器默认值；`tokenBudget` 默认不设，仓库设了上限时该上限同时作为默认值。worker 启动和整轮执行遵守任务与当前机器预算的较小值；这些设置没有为主控验证命令新增内存守护。
 
-任务提供的标量和数组替换 defaults，包括显式空数组；resources 按字段合并。需要保留的共同规则放入 `requirements.constraints`。临时覆盖只影响该任务，长期修改通过 profile 更新操作完成。
+任务提供的标量和数组替换 defaults，包括显式空数组；resources 和环境变量按名称合并。看起来像凭据的环境变量名会被拒绝：Key 只放在 `.env.local`，不进 profile 或合同。需要保留的共同规则放入 `requirements.constraints`。临时覆盖只影响该任务，长期修改通过 profile 更新操作完成。
 
 ## 创建简短合同
 
@@ -71,6 +71,8 @@ profile 写入编排器安装目录的 `skills/orchestrate-code/repositories.loc
 ## 修改计划与偏好
 
 `workflow_plan_update` 的 `spec` 支持局部字段，例如 `{goal:"澄清后的目标"}`，同时提供任务 ID、`expectedPlanRevision` 和 `changeReason`。未指定下一计划版本时自动递增。解析仍使用任务冻结的 profile，并保留已有任务覆盖；旧版本配置工件可继续读取。
+
+如果只想改主控计划的 `checks`、`allowedPaths` 或 `resources`，改用 `workflow_plan_amend {id,expectedPlanRevision,patch,reason}`：它保留计划版本和 worker 的报告，之后的计划更新也会保留修订后的值。
 
 在明确的计划修订中设置 `refreshRepositoryProfile=true`，才采用当前仓库偏好。执行身份继续保持原值，其来源可能标为 `previous_plan`。单独编辑 profile 不会改变运行中或已有任务；活动、已验收及终态任务的计划限制继续适用。
 

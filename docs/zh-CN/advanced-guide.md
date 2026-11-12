@@ -86,18 +86,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-claude.p
 |---|---|---|
 | `planned` | 契约已记录，还没建工作树 | 主控检查计划后 prepare |
 | `ready` | 工作树已准备，可派发 | 主控 dispatch |
-| `running` | 执行 agent 正在工作 | 等待有意义的进展 |
+| `queued` | 派发在等待空闲的 worker 槽位 | 不用处理，会自己启动；也可用 `workflow_cancel` 的 scope `queue` 撤回 |
+| `running` | 执行 agent 正在工作 | 用 `workflow_status` 看步数、token 和最近的工具调用 |
 | `awaiting_review` | 执行者提交了完整结果 | 主控读代码、运行独立验证 |
 | `verifying` | 正在真实运行验证命令 | 等待退出码和日志 |
-| `needs_changes` | 主控验收发现问题 | 带具体验收 ID 反馈，继续原会话 |
+| `needs_changes` | 主控验收发现问题；或工作已完成但最终报告始终无效（`continuation.reason=report_invalid`） | 带具体验收 ID 反馈，继续原会话；报告无效时先看 diff，再派发一次 |
 | `needs_replan` | 发现设计/范围/约束冲突 | 主控更新计划；必要时找你决定，不能直接重跑旧计划 |
-| `blocked` | 环境、权限或依赖挡住执行 | 主控诊断；修复后带诊断反馈重派 |
-| `failed` | 执行错误或结果不符合协议 | 主控查看错误与本轮报告，诊断后决定是否重试 |
+| `blocked` | 环境、权限或依赖挡住执行；或本轮用完了全部步数预算（`continuation.reason=step_limit`） | 主控诊断；修复后带诊断反馈重派。步数用尽时再派发一次即可继续 |
+| `failed` | provider 错误、超时、内存超限、token 预算或进程退出；`lastError` 写明原因 | 主控查看错误与本轮工件，诊断后决定是否重试 |
 | `interrupted` | 后台停止或中断，完成状态不确定 | 检查已有改动，再明确恢复 |
 | `accepted` | 主控已完成该任务验收 | 审查最终交付；不代表已 commit/push |
 | `cancelled` | 该任务已被取消 | 保留文件；当前实现不直接恢复 cancelled 任务 |
 
-主控可反复检查、验证和要求返工，直到满足验收条件，正常返工不限轮数。maxAttempts 默认 5，仅限制 failed/interrupted/blocked 后的累计恢复派发次数，不包含首次执行和正常返工。每次恢复需提供结构化诊断反馈；修改计划、正常完成和重启都不清零恢复计数。达到恢复上限时主控应分析问题、必要时接管局部修复，不能重建相同任务绕过预算。workflow_status 用 attempts 记录总轮次，recoveryAttempts/recoveryAttemptLimit/remainingRecoveryAttempts 记录异常恢复预算；旧任务缺少恢复计数时从 0 开始记录，历史轮次保留。
+主控可反复检查、验证和要求返工，直到满足验收条件，正常返工不限轮数。maxAttempts 默认 5，仅限制 failed/interrupted/blocked 后的累计恢复派发次数，不包含首次执行和正常返工，也不包含连续前两次的步数用尽续跑和报告无效后的重新派发。每次恢复需提供结构化诊断反馈；修改计划、正常完成和重启都不清零恢复计数。达到恢复上限时主控应分析问题、必要时接管局部修复，不能重建相同任务绕过预算。workflow_status 用 attempts 记录总轮次，recoveryAttempts/recoveryAttemptLimit/remainingRecoveryAttempts 记录异常恢复预算；旧任务缺少恢复计数时从 0 开始记录，历史轮次保留。
 
 ## 6. 下班、关闭窗口和第二天继续
 
@@ -137,7 +138,9 @@ npm run stop
 | 同目录 `report.json` | 执行者的结构化报告；报告本身不等于独立验收 |
 | 同目录 `worker-report.md` | 报告的可读摘要 |
 | 同目录 `verify-*.log` | 主控通过程序真实运行的验证日志 |
+| 同目录 `amendment-*.json` | 主控对检查、范围或资源的修订，含修改前后的值 |
 | 同目录 `events.jsonl` | 派发、改计划、验收等事件 |
+| `.runtime/archive/<task-id>/` | 已归档任务的同一套记录 |
 
 主控应实际检查新增文件和 diff，不能只看“已完成”或一段测试成功描述。项目要求的检查必须通过；缺环境就报告 blocked，不能当作测试通过。
 
@@ -149,7 +152,9 @@ npm run stop
 
 重要监督决策、修复、风险和下一步通过 `workflow_note_add` 持久记录。上下文压缩后用 `workflow_handoff` 恢复最多 8 个任务的计划、历史和工件引用，原目录换分支后也可读取；它用于恢复和报告提纲，不替代当前源码验证。字段和边界见[协议](protocol.md)。
 
-新任务直接说“执行侧用 DeepSeek”或“执行侧默认 DeepSeek”，主控会选对应 provider。前提是相应 Key 已配置。订阅主控和执行 API 分别计费；custom provider 报告中的 cost=0 不代表供应商免费。
+新任务直接说“执行侧用 DeepSeek”或“执行侧默认 DeepSeek”，主控会选对应 provider。前提是相应 Key 已配置。订阅主控和执行 API 分别计费；custom provider 报告中的 cost=0 不代表供应商免费。在 provider 条目里加上 `pricing`（`currency`、`inputPerMillion`、`outputPerMillion`、可选的 `cacheReadPerMillion`），成本就按上报的 token 估算；在任务上设置 `resources.tokenBudget`，或在仓库 profile 里设置 `limits.tokenBudget`，可以在任务花费超出预期时把它停下。
+
+`workerSteps`（默认 150）是单轮运行的模型步数预算，`maxWorkerSteps`（默认 600）是任务最多能申请的步数；`maxStepContinuations`（默认 2）是步数用尽后可以不带诊断反馈连续续跑的次数。worker 需要的工具链变量（例如某个 SDK 的根目录）放在任务的 `environment` 或仓库 profile 的 `defaults.environment` 里，不要手工塞进 daemon 的环境。
 
 对**已经创建的任务**，provider 和基准分支属于执行身份，当前版本不能直接改。让主控说明迁移方案，再创建不同任务并处理已有改动，不要假定修改配置就会把原会话自动切到另一家模型。
 
@@ -174,8 +179,12 @@ npm run start
 | Missing Key | 在 `.env.local` 填对应 Key，再重启后台；不要把 Key 放进任务 prompt |
 | 401/403 或模型不可用 | 检查 Key 所属区域、endpoint、模型权限；停止盲目重试 |
 | 429 | 主控诊断限速/配额；必要时调低并行或稍后重试 |
-| 报告不是严格 JSON / 版本不匹配 | 主控查看本轮 response 与 raw-report 工件；诊断提示词或协议，不能把普通文本强行判作成功 |
-| 任务因构建环境阻塞 | 查看日志与所需工具链/环境变量，不要让执行者省略验收命令 |
+| 报告无效（`needs_changes`，`report_invalid`） | 工作已保留：先看 diff，再派发一次。反复出现时查看 `reportSubmissions`；不能把普通文本强行判作成功 |
+| 反复因步数用尽停下 | 任务对单轮来说太大：拆分，或用 `workflow_plan_amend` 调高 `workerSteps` |
+| `WORKER_TOKEN_BUDGET` | 先审查已产出的内容，只有在花费可以接受时才调高预算 |
+| 验证失败且退出码很大 | 看检查结果里的 `exitDetail` 和 `tail`；`0xC0000005` 这类是崩溃，不是测试失败 |
+| 改到了范围之外（`scopeViolations`） | 让 worker 撤回；如果是有意的，用 `workflow_plan_amend` 放宽 `allowedPaths` |
+| 任务因构建环境阻塞 | 查看日志与所需工具链/环境变量，缺的变量写进 `environment`；不要让执行者省略验收命令 |
 | 分支或工作树路径已存在 | 先核对现有任务与已有代码；不要直接删掉或重新建相同任务 |
 | 达到异常恢复上限 | 让主控总结失败原因并做决策，不要重复创建相同任务绕过预算；正常审查返工不限轮数 |
 
@@ -192,4 +201,5 @@ node dist/src/cli.js call TOOL_NAME --file C:/path/to/request.json
 - [首次验证指南](getting-started.md)：第一次填 Key、探针、接入和启动 #244。
 - [交接协议](protocol.md)：计划版本、验收 ID、结果格式和改计划机制。
 - [工作流规则](../../skills/orchestrate-code/SKILL.md)：主控实际遵循的指令。
+- [主控参考](supervisor-reference.md)：排队、续跑、修订、验证、等待和归档的确切规则。
 - [架构与执行边界](architecture.md)：后台行为、内存限制及已知边界。

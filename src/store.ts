@@ -12,13 +12,36 @@ export class Store {
     return path.join(this.root, id);
   }
   file(id: string): string { return path.join(this.dir(id), 'task.json'); }
-  get(id: string): Task { return JSON.parse(readFileSync(this.file(id), 'utf8')) as Task; }
+  // Archived tasks leave the active store but keep their directory and ID.
+  get archiveRoot(): string { return path.join(path.dirname(this.root), 'archive'); }
+  archiveDir(id: string): string { this.dir(id); return path.join(this.archiveRoot, id); }
+  get(id: string): Task {
+    const file = this.file(id);
+    if (!existsSync(file)) throw new Error(existsSync(path.join(this.archiveDir(id), 'task.json'))
+      ? `Task ${id} is archived; read it with workflow_status {id} or under ${this.archiveDir(id)}` : `Unknown task ${id}`);
+    return JSON.parse(readFileSync(file, 'utf8')) as Task;
+  }
   all(): Task[] {
     return readdirSync(this.root, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(this.file(d.name))).map(d => this.get(d.name));
+  }
+  archived(): Task[] {
+    if (!existsSync(this.archiveRoot)) return [];
+    return readdirSync(this.archiveRoot, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(path.join(this.archiveRoot, d.name, 'task.json')))
+      .map(d => JSON.parse(readFileSync(path.join(this.archiveRoot, d.name, 'task.json'), 'utf8')) as Task);
+  }
+  getArchived(id: string): Task | undefined {
+    const file = path.join(this.archiveDir(id), 'task.json');
+    return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Task : undefined;
+  }
+  archive(id: string): string {
+    const target = this.archiveDir(id); mkdirSync(this.archiveRoot, { recursive: true });
+    if (existsSync(target)) throw new Error('An archived task already uses this ID');
+    renameSync(this.dir(id), target); return target;
   }
   create(input: TaskSpec, configuration?: RepositoryConfiguration, executionProvider?: Config['providers'][string]): Task {
     const spec = TaskSpecSchema.parse(input);
     if (existsSync(this.dir(spec.id))) throw new Error('Task ID already exists');
+    if (existsSync(this.archiveDir(spec.id))) throw new Error('Task ID already belongs to an archived task; choose a new ID');
     mkdirSync(this.dir(spec.id));
     if (configuration) this.writeConfiguration(spec, configuration);
     const now = new Date().toISOString();

@@ -111,7 +111,7 @@ test('partial resource updates retain other explicit values and task overrides s
   await f.engine.createFromInput(input(f.repository, 'one', { resources: { workerMemoryLimitMB: 512, taskTimeoutMinutes: 2 }, constraints: ['Task choice'] }));
   await configure(f, preferences({ defaults: { provider: 'fixture', verificationPolicy: 'review_allowed', constraints: ['New default'], resources: { workerMemoryLimitMB: 1024 } } }), 1);
   const revised = await f.engine.updatePlan('one', 1, { resources: { workerMemoryLimitMB: 768 } }, 'Adjust budget', true);
-  assert.deepEqual(revised.spec.resources, { workerMemoryLimitMB: 768, taskTimeoutMinutes: 2 }); assert.deepEqual(revised.spec.constraints, ['Task choice']);
+  assert.deepEqual(revised.spec.resources, { workerMemoryLimitMB: 768, taskTimeoutMinutes: 2, workerSteps: 150 }); assert.deepEqual(revised.spec.constraints, ['Task choice']);
 });
 
 test('stale profile writes, accidental ID reuse and duplicate bindings are rejected', async () => {
@@ -252,4 +252,25 @@ console.log(JSON.stringify(result));`;
   assert.deepEqual(readdirSync(path.dirname(results[0].profile.file)).sort(), ['profile.json', 'scripts']);
   assert.deepEqual(JSON.parse(readFileSync(results[0].profile.file, 'utf8')).preferences, { defaults: {}, limits: {}, requirements: { constraints: [] } });
   assert.equal(await git(f.repository, ['status', '--porcelain']), '');
+});
+
+test('profile environment, step budget and token limit are inherited, merged by name and enforced as ceilings', async () => {
+  const f = await fixture();
+  await configure(f, preferences({ defaults: { provider: 'fixture', verificationPolicy: 'review_allowed', environment: { VCPKG_ROOT: 'D:/vcpkg', BUILD_KIND: 'debug' }, resources: { workerSteps: 200 } },
+    limits: { workerSteps: 300, tokenBudget: 500000 } }));
+  const created = await f.engine.createFromInput(input(f.repository, 'env', { environment: { BUILD_KIND: 'release' } }));
+  assert.deepEqual(created.spec.environment, { VCPKG_ROOT: 'D:/vcpkg', BUILD_KIND: 'release' });
+  assert.equal(created.spec.resources!.workerSteps, 200); assert.equal(created.spec.resources!.tokenBudget, 500000);
+  assert.equal(created.configuration!.sources['resources.workerSteps'], 'repository_default');
+  assert.equal(created.configuration!.sources['limits.tokenBudget'], 'repository_requirement');
+  await assert.rejects(f.engine.createFromInput(input(f.repository, 'over', { resources: { workerSteps: 301 } })), /workerSteps exceeds/);
+  await assert.rejects(f.engine.createFromInput(input(f.repository, 'budget', { resources: { tokenBudget: 600000 } })), /tokenBudget exceeds/);
+  const read = await callTool(f.engine, 'workflow_repository_config', { repository: f.repository }) as any;
+  assert.equal(read.effectiveLimits.workerSteps, 300); assert.equal(read.effectiveLimits.tokenBudget, 500000);
+  // A plan patch adds a variable without dropping the inherited ones.
+  const revised = await f.engine.updatePlan('env', 1, { environment: { EXTRA: '1' } }, 'Add a variable');
+  assert.deepEqual(revised.spec.environment, { VCPKG_ROOT: 'D:/vcpkg', BUILD_KIND: 'release', EXTRA: '1' });
+  // The preference schema itself refuses credential-like names, so they never reach a profile file.
+  await assert.rejects(callTool(f.engine, 'workflow_repository_config_update', { repository: f.repository, id: 'project', expectedRevision: 1,
+    preferences: { defaults: { environment: { GITHUB_TOKEN: 'x' } } } }), /credential/);
 });

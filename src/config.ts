@@ -43,6 +43,19 @@ export function redact(value: string, env: NodeJS.ProcessEnv): string {
   }
   return out;
 }
+// Add task/repository variables to an inherited environment. ${NAME} expands from the environment built so far,
+// so "PATH": "D:/tools/bin;${PATH}" prepends. Windows names are case-insensitive, and a duplicate spelling would win unpredictably.
+export function applyEnvironment(base: NodeJS.ProcessEnv, extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = { ...base };
+  const same = (a: string, b: string) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const lookup = (name: string) => { const key = Object.keys(result).find(k => same(k, name)); return key === undefined ? undefined : result[key]; };
+  for (const [name, raw] of Object.entries(extra ?? {})) {
+    const value = raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, ref: string) => lookup(ref) ?? '');
+    for (const key of Object.keys(result)) if (same(key, name)) delete result[key];
+    result[name] = value;
+  }
+  return result;
+}
 export function executionGuard(config: Config, root = ROOT): void {
   if (config.executionEnabled) return;
   const status = configStatus(root, config);

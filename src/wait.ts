@@ -4,8 +4,10 @@ export const WAIT_USAGE = 'wait TASK_ID [TASK_ID ...] [--until attention|change]
 export interface WaitTask { id: string; status: Status; revision: number; [key: string]: unknown }
 export interface WaitOptions { until: 'attention' | 'change'; after: Record<string, number>; timeoutMs: number }
 export interface WaitRequest { ids: string[]; after: Record<string, number>; timeoutMs: number }
-export type WaitResult = { reason: 'attention' | 'changed' | 'timeout'; tasks: WaitTask[] };
+// attention lists the task IDs that made an attention wait return.
+export type WaitResult = { reason: 'attention' | 'changed' | 'timeout'; tasks: WaitTask[]; attention?: string[] };
 const attention = new Set<Status>(['awaiting_review', 'needs_changes', 'needs_replan', 'blocked', 'accepted', 'integrated', 'failed', 'cancelled', 'interrupted']);
+const terminal = new Set<Status>(['accepted', 'integrated', 'cancelled']);
 
 export function parseWaitArgs(args: string[]): { ids: string[]; options: WaitOptions } {
   const ids: string[] = []; const options: WaitOptions = { until: 'attention', after: {}, timeoutMs: 0 };
@@ -38,14 +40,22 @@ export async function waitForTasks(ids: string[], request: (args: WaitRequest, s
   const combined = AbortSignal.any([...(signal ? [signal] : []), ...(timeout ? [timeout] : [])]);
   let tasks: WaitTask[] = []; let after = { ...options.after };
   const deadline = options.timeoutMs ? Date.now() + options.timeoutMs : Infinity;
+  // Tasks that were already finished when the wait began. With several IDs they would otherwise make every
+  // wait return at once, so they only count again if their status changes.
+  const settled = new Map<string, Status>();
+  // An explicit cursor says "I have seen this task up to here": its current attention state is not news.
+  const needsAttention = (t: WaitTask) => (attention.has(t.status) || typeof t.queueError === 'string')
+    && settled.get(t.id) !== t.status && !(t.id in options.after && t.revision <= options.after[t.id]!);
   try {
     combined.throwIfAborted();
     tasks = await request({ ids, after: {}, timeoutMs: 0 }, combined);
+    if (!tasks.every(t => terminal.has(t.status))) for (const task of tasks) if (terminal.has(task.status)) settled.set(task.id, task.status);
     // Without a cursor, change means a change after this initial snapshot.
     for (const task of tasks) after[task.id] ??= task.revision;
     for (;;) {
       combined.throwIfAborted();
-      if (options.until === 'attention' && tasks.some(t => attention.has(t.status))) return { reason: 'attention', tasks };
+      const waiting = tasks.filter(needsAttention);
+      if (options.until === 'attention' && waiting.length) return { reason: 'attention', tasks, attention: waiting.map(t => t.id) };
       if (options.until === 'change' && tasks.some(t => t.revision > after[t.id]!)) return { reason: 'changed', tasks };
       after = Object.fromEntries(tasks.map(t => [t.id, Math.max(after[t.id] ?? -1, t.revision)]));
       const remaining = deadline - Date.now();

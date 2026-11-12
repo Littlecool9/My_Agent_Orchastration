@@ -14,12 +14,15 @@ This repository implements a local MCP scheduler and its supervisor Skill. Targe
 | Concern | Source |
 |---|---|
 | MCP names, descriptions and dispatch | `src/tools.ts`, `src/mcp.ts` |
-| Task lifecycle, evidence and acceptance | `src/engine.ts`, `src/schema.ts`, `src/protocol.ts` |
+| Task lifecycle, queue, continuations, amendments, evidence and acceptance | `src/engine.ts`, `src/schema.ts`, `src/protocol.ts` |
+| Worker report normalization and resubmission | `src/protocol.ts`, `src/report-submission.ts` |
+| Live run progress, step and token budgets, cost estimates | `src/opencode.ts`, `src/opencode-session.ts` |
 | Repository profiles and frozen defaults | `src/repository-profile.ts` |
 | Daemon, CLI and persistent waits | `src/daemon.ts`, `src/cli.ts`, `src/wait.ts` |
 | Worker permissions, processes and memory guard | `src/opencode.ts`, `src/memory-guard.ts`, `scripts/worker-job.*` |
 | Installation, updates and client ownership | `scripts/setup-lib.mjs`, `scripts/setup.mjs`, `scripts/update.mjs` |
 | Supervisor instructions distributed to clients | `skills/orchestrate-code/SKILL.md`, generated `integrations/claude/skills/orchestrate-code/SKILL.md` |
+| Detailed supervisor rules kept out of the Skill | `docs/en/supervisor-reference.md`, `docs/zh-CN/supervisor-reference.md` |
 
 ## Work and verification
 
@@ -31,7 +34,7 @@ Task records in `.runtime/`, worktrees, credentials and `skills/orchestrate-code
 
 ## Keep capabilities discoverable
 
-When adding or changing a workflow capability, update its MCP description, the supervisor Skill's capability table and operating instructions, and the corresponding English/Chinese guide. Update worker prompts only when worker behavior changes. Document the current implementation; do not describe a proposed feature as available.
+When adding or changing a workflow capability, update its MCP description, the supervisor Skill's capability table and operating instructions, and the corresponding English/Chinese guide. Keep the Skill to the main path with worked examples; exact rules, edge cases and legacy behavior go in the supervisor reference. Update worker prompts only when worker behavior changes. Document the current implementation; do not describe a proposed feature as available.
 
 After editing the shared Skill, run `node scripts/prepare-integrations.mjs` to regenerate the Claude variant. Changing this repository does not refresh already installed Skills or an already running client's tool descriptions. Use the explicit updater below, and verify installed content before claiming it is current.
 

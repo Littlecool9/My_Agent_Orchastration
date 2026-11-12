@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFi
 import { createHash, randomUUID } from 'node:crypto';
 import { git } from './process.js';
 import { RepositoryPreferencesSchema, RepositoryProfileSchema, TaskSpecSchema, DEFAULT_PROVIDER,
-  type Config, type RepositoryConfiguration, type RepositoryIdentity, type RepositoryPreferences, type ResourceSettings,
+  type Config, type RepositoryConfiguration, type RepositoryIdentity, type RepositoryPreferences, type ResourceSettings, type ResourceLimits,
   type Task, type TaskPlanPatch, type TaskSpec, type RepositoryProfile } from './schema.js';
 
 type ProfileSnapshot = RepositoryConfiguration['profile'];
@@ -19,13 +19,18 @@ export async function repositoryIdentity(directory: string): Promise<RepositoryI
   ]);
   return { commonGitDir: key(realpathSync(common)), root: realpathSync(root) };
 }
-export function resourceLimits(config: Config, preferences?: RepositoryPreferences): Required<ResourceSettings> {
+export function resourceLimits(config: Config, preferences?: RepositoryPreferences): ResourceLimits {
   return { workerMemoryLimitMB: Math.min(config.workerMemoryLimitMB, preferences?.limits.workerMemoryLimitMB ?? Infinity),
-    taskTimeoutMinutes: Math.min(config.taskTimeoutMinutes, preferences?.limits.taskTimeoutMinutes ?? Infinity) };
+    taskTimeoutMinutes: Math.min(config.taskTimeoutMinutes, preferences?.limits.taskTimeoutMinutes ?? Infinity),
+    workerSteps: Math.min(config.maxWorkerSteps, preferences?.limits.workerSteps ?? Infinity),
+    // Only a repository can cap tokens; without a cap, tasks have no budget unless they set one.
+    ...(preferences?.limits.tokenBudget !== undefined ? { tokenBudget: preferences.limits.tokenBudget } : {}) };
 }
-export function assertResourceLimits(resources: ResourceSettings | undefined, limits: Required<ResourceSettings>): void {
-  for (const name of ['workerMemoryLimitMB', 'taskTimeoutMinutes'] as const)
-    if (resources?.[name] !== undefined && resources[name]! > limits[name]) throw new Error(`${name} exceeds the effective hard limit ${limits[name]}`);
+export function assertResourceLimits(resources: ResourceSettings | undefined, limits: ResourceLimits): void {
+  for (const name of ['workerMemoryLimitMB', 'taskTimeoutMinutes', 'workerSteps', 'tokenBudget'] as const) {
+    const limit = limits[name];
+    if (resources?.[name] !== undefined && limit !== undefined && resources[name]! > limit) throw new Error(`${name} exceeds the effective hard limit ${limit}`);
+  }
 }
 
 export class RepositoryProfiles {
@@ -108,7 +113,7 @@ export class RepositoryProfiles {
   }
 }
 
-function resolveCheckPath(value: string, profile: ProfileSnapshot): string {
+export function resolveCheckPath(value: string, profile: ProfileSnapshot): string {
   if (!value.startsWith('profile://')) return value;
   if (!profile) throw new Error('profile:// references require a bound repository profile');
   const base = realpathSync(path.dirname(profile.file)); const relative = value.slice('profile://'.length);
@@ -127,12 +132,14 @@ export function resolveTaskInput(input: TaskPlanPatch, identity: RepositoryIdent
   const prior = previous?.configuration?.overrides ?? previous?.spec ?? {};
   const overrides = { ...prior, ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) } as TaskPlanPatch;
   if (prior.resources || input.resources) overrides.resources = { ...prior.resources, ...input.resources };
+  // Like resources, environment variables merge by name: repository defaults, then the task's own.
+  if (prior.environment || input.environment) overrides.environment = { ...prior.environment, ...input.environment };
   const mode = overrides.mode ?? defaults.mode ?? 'implement';
   const builtin = { contractVersion: 1, planRevision: 1, title: overrides.goal?.slice(0, 120), baseRef: 'HEAD', branch: `${branchPrefix}${overrides.id}`,
     provider: DEFAULT_PROVIDER, mode, workspaceMode: 'worktree', nonGoals: [], decisions: [], contextRefs: [],
     steps: [{ id: 'S1', instruction: mode === 'investigate' ? 'Investigate the goal and provide criterion-linked evidence without modifying files.' : 'Implement the goal within the agreed scope and provide criterion-linked evidence.', dependsOn: [], flexibility: 'adaptable' }],
     autonomy: { localDecisions: ['Local implementation and debugging within the agreed scope'], escalateWhen: ['A repository rule or acceptance criterion conflicts with the plan, or a scope/public-interface change is required'] },
-    acceptance: [], constraints: [], allowedPaths: [], dependencies: [], checks: [], workerChecks: [], verificationPolicy: 'commands_required' };
+    acceptance: [], constraints: [], allowedPaths: [], dependencies: [], checks: [], workerChecks: [], verificationPolicy: 'commands_required', environment: {} };
   const frozenIdentity = previous ? Object.fromEntries(identityFields.map(name => [name, previous.spec[name]])) : {};
   const values = { ...builtin, ...taskDefaults, ...frozenIdentity, ...overrides };
   const sources: RepositoryConfiguration['sources'] = Object.fromEntries(Object.keys(builtin).map(name => [name, 'builtin']));
@@ -141,10 +148,16 @@ export function resolveTaskInput(input: TaskPlanPatch, identity: RepositoryIdent
   if (previous) for (const name of identityFields) if (!(name in input)) sources[name] = profile?.hash !== previous.configuration?.profile?.hash ? 'previous_plan' : previous.configuration?.sources[name] ?? 'task';
   if (!previous && defaults.branchPrefix && !overrides.branch) sources.branch = 'repository_default';
   const preferences = profile?.value.preferences; const limits = resourceLimits(config, preferences);
-  values.resources = { ...limits, ...defaults.resources, ...overrides.resources };
+  // Memory and time default to their ceilings. Steps default to the machine's per-run budget, which a task may raise up to the ceiling.
+  values.resources = { ...limits, workerSteps: Math.min(config.workerSteps, limits.workerSteps), ...defaults.resources, ...overrides.resources };
+  values.environment = { ...defaults.environment, ...overrides.environment };
   for (const name of ['workerMemoryLimitMB', 'taskTimeoutMinutes'] as const) {
     sources[`limits.${name}`] = preferences?.limits[name] !== undefined && preferences.limits[name]! <= config[name] ? 'repository_requirement' : 'builtin';
     sources[`resources.${name}`] = overrides.resources?.[name] !== undefined ? 'task' : defaults.resources?.[name] !== undefined ? 'repository_default' : sources[`limits.${name}`]!;
+  }
+  for (const name of ['workerSteps', 'tokenBudget'] as const) {
+    sources[`limits.${name}`] = preferences?.limits[name] !== undefined ? 'repository_requirement' : 'builtin';
+    if (values.resources[name] !== undefined) sources[`resources.${name}`] = overrides.resources?.[name] !== undefined ? 'task' : defaults.resources?.[name] !== undefined ? 'repository_default' : sources[`limits.${name}`]!;
   }
   assertResourceLimits(values.resources, limits);
   const required = preferences?.requirements;

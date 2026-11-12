@@ -73,9 +73,12 @@ export async function assertWorktree(task: Task): Promise<void> {
   const result = await git(task.worktree, ['merge-base', task.baseCommit, 'HEAD']);
   if (result !== task.baseCommit) throw new Error('Task base is no longer an ancestor of HEAD');
 }
-export async function assertAllowedPaths(task: Task): Promise<void> {
-  if (!task.spec.allowedPaths.length || !task.worktree || !task.baseCommit) return;
-  const forbidden = (await changedFiles(task.worktree, task.baseCommit)).filter(file =>
+export async function scopeViolations(task: Task): Promise<string[]> {
+  if (!task.spec.allowedPaths.length || !task.worktree || !task.baseCommit) return [];
+  return (await changedFiles(task.worktree, task.baseCommit)).filter(file =>
     !task.spec.allowedPaths.some(prefix => file === prefix || file.startsWith(prefix.replace(/\/$/, '') + '/')));
-  if (forbidden.length) throw new Error(`Changes outside the agreed scope: ${forbidden.join(', ')}`);
+}
+export async function assertAllowedPaths(task: Task): Promise<void> {
+  const forbidden = await scopeViolations(task);
+  if (forbidden.length) throw new Error(`Changes outside the agreed scope: ${forbidden.join(', ')}. Revert them, or widen allowedPaths with workflow_plan_amend if the change is intended.`);
 }

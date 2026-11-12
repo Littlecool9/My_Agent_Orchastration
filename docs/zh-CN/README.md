@@ -10,6 +10,7 @@
 | [进阶使用](advanced-guide.md) | milestone、状态、恢复预算、验证与排错 |
 | [架构与执行行为](architecture.md) | 调度、隔离、内存监护、会话与限制 |
 | [交接协议](protocol.md) | 带版本的契约、报告、反馈与计划更新 |
+| [主控参考](supervisor-reference.md) | 资源、排队、续跑、修订、验证、等待和归档的确切规则 |
 
 开发者可从[目录结构](../../README.md#repository-layout)、[接入文件](../../integrations/README.md)、[任务示例](../../examples/README.md)和[公共主控 Skill](../../skills/orchestrate-code/SKILL.md)开始。
 

@@ -21,8 +21,8 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'dist/src/cli.js'), 'mcp'], stderr: 'pipe' });
   try {
     await client.connect(transport);
-    const listed = await client.listTools(); assert.equal(listed.tools.length, 20);
-    for (const name of ['workflow_capacity', 'workflow_note_add', 'workflow_handoff']) assert.ok(listed.tools.some(t => t.name === name));
+    const listed = await client.listTools(); assert.equal(listed.tools.length, 22);
+    for (const name of ['workflow_capacity', 'workflow_note_add', 'workflow_handoff', 'workflow_plan_amend', 'workflow_archive']) assert.ok(listed.tools.some(t => t.name === name));
     assert.ok(listed.tools.some(t => t.name === 'workflow_dispatch'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_verify_stop'));
     assert.ok(listed.tools.some(t => t.name === 'workflow_evidence_add'));
@@ -77,7 +77,10 @@ test('isolated MCP handshake, authentication, reconnect and stale-config recover
     const another = new Client({ name: 'reconnect-test', version: '1' });
     try {
       await another.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'dist/src/cli.js'), 'mcp'], stderr: 'pipe' }));
-      await another.callTool({ name: 'workflow_status', arguments: {} });
+      const overview = await another.callTool({ name: 'workflow_status', arguments: {} });
+      assert.deepEqual(JSON.parse((overview.content as { text: string }[])[0]!.text).tasks.map((t: { id: string }) => t.id).sort(), ['first-use', 'wait-fixture']);
+      const amended = await another.callTool({ name: 'workflow_plan_amend', arguments: { id: 'wait-fixture', expectedPlanRevision: 2, patch: { resources: { workerSteps: 200 } }, reason: 'Exercise amendment over MCP' } });
+      assert.equal(JSON.parse((amended.content as { text: string }[])[0]!.text).resources.workerSteps, 200);
       assert.equal(readInfo(root)!.pid, info.pid);
       await stopDaemon(root);
       const refreshed = await another.callTool({ name: 'workflow_config', arguments: {} });

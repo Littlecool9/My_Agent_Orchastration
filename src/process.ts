@@ -29,6 +29,17 @@ export async function runCommand(command: string, args: string[], cwd: string, e
     });
   });
 }
+const NT_STATUS: Record<number, string> = {
+  0xC0000005: 'access violation', 0xC000001D: 'illegal instruction', 0xC0000094: 'integer divide by zero', 0xC00000FD: 'stack overflow',
+  0xC0000135: 'required DLL not found', 0xC000013A: 'terminated by Ctrl+C or console close', 0xC0000142: 'DLL initialization failed',
+  0xC0000374: 'heap corruption', 0xC0000409: 'fail-fast or stack buffer overrun (often abort())',
+};
+// Windows reports crashes as large NTSTATUS exit codes; show them in hex with a name when known.
+export function describeExitCode(code: number | null): string | undefined {
+  if (code === null || (code >= 0 && code <= 255)) return undefined;
+  const unsigned = code >>> 0; const hex = '0x' + unsigned.toString(16).toUpperCase().padStart(8, '0');
+  return NT_STATUS[unsigned] ? `${hex} ${NT_STATUS[unsigned]}` : hex;
+}
 export async function killTree(child: ChildProcess): Promise<void> {
   if (!child.pid || child.exitCode !== null) return;
   if (process.platform === 'win32') {

@@ -10,6 +10,7 @@
 | [Advanced guide](advanced-guide.md) | Milestones, states, recovery budgets, verification and troubleshooting |
 | [Architecture](architecture.md) | Scheduler, isolation, memory guard, sessions and limitations |
 | [Protocol](protocol.md) | Versioned contracts, reports, feedback and plan updates |
+| [Supervisor reference](supervisor-reference.md) | Exact rules for resources, queueing, continuations, amendments, verification, waiting and archiving |
 
 For developers: [repository layout](../../README.md#repository-layout), [integration files](../../integrations/README.md), [task examples](../../examples/README.md), [shared supervisor Skill](../../skills/orchestrate-code/SKILL.md).
 

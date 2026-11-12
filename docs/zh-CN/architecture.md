@@ -58,7 +58,9 @@ MCP 客户端关闭不停止 daemon，所以已派发任务可继续。主控关
 - OpenCode 的工具权限、分支与 worktree 不是 OS 沙箱。实现 agent 有广泛 shell 权限以运行项目工具链；禁止 push 等规则和 allowedPaths 检查不能保证任意 shell 代码无法绕过。它适用于你信任的本地仓库。
 - 只读 investigator 禁止写文件和通用 shell，只开放文件读取与少量 Git 查询；更复杂的只读检查由主控完成。
 - prerequisites/dependencies 是调度和基线检查，不会自动合并源码。依赖结果必须在所选基线中；跨任务整合与组合测试由主控完成。
-- evidence 是主控填写的引用；服务器检查运行证据与源码版本，不能判断主控有没有认真审查。报告的 token/cost 是 OpenCode 返回值，custom provider 的 cost 可能为 0，不是供应商账单。
+- evidence 是主控填写的引用；服务器检查运行证据与源码版本，不能判断主控有没有认真审查。报告的 token/cost 是 OpenCode 返回值；custom provider 的 cost 可能为 0，此时如果用户配置了 `pricing` 就按它估算。两者都不是供应商账单。
+- 派发队列和运行中的实时进度只存在于 daemon 的内存里。重启会撤回排队中的派发且不启动它们；进度只有在启动该运行的 daemon 还活着时才看得到。
+- 任务的 `environment` 值会存进任务记录并展示给 worker。它用于工具链路径和开关；看起来像凭据的名字会被拒绝。
 - 任务正文、仓库规则、构建命令和 AGENTS.md 属于受信任的任务输入。执行端不会自动继承主控的客户端插件、浏览器工具或订阅额度。
 
 密钥只从本地文件或环境读入，不写进 MCP 配置。worker 环境会剔除继承的主控 API/OAuth/GitHub 凭据，只注入所选供应商的 Key，并使用独立 XDG 配置和数据目录。日志做尽力脱敏，不等同于完整秘密检测。

@@ -79,18 +79,19 @@ The supervisor converts findings into structured feedback referencing acceptance
 |---|---|---|
 | `planned` | Contract stored; workspace not prepared | Review plan, then prepare |
 | `ready` | Workspace prepared | Dispatch |
-| `running` | Worker executing | Wait for meaningful progress |
+| `queued` | Dispatch is waiting for a free worker slot | Nothing; it starts by itself, or withdraw it with `workflow_cancel` scope `queue` |
+| `running` | Worker executing | Read `workflow_status` for steps, tokens and the last tool |
 | `awaiting_review` | Complete report available | Inspect code and independently verify |
 | `verifying` | Real verification commands running | Wait for logs and exit codes |
-| `needs_changes` | Review found defects | Rework with criterion-linked feedback |
+| `needs_changes` | Review found defects, or the work is done but the final report stayed invalid (`continuation.reason=report_invalid`) | Rework with criterion-linked feedback; for an invalid report, review the diff and dispatch again |
 | `needs_replan` | Contract/design conflict | Update the plan before dispatch |
-| `blocked` | Environment, access or dependency blocker | Diagnose, repair and supply feedback |
-| `failed` | Execution or report validation failed | Inspect the error and run artifacts |
+| `blocked` | Environment, access or dependency blocker; or the run used its whole step budget (`continuation.reason=step_limit`) | Diagnose, repair and supply feedback; for a step limit, dispatch again to continue |
+| `failed` | Provider error, timeout, memory limit, token budget or process exit; `lastError` names it | Inspect the error and run artifacts |
 | `interrupted` | Execution stopped; completion uncertain | Inspect changes before resuming |
 | `accepted` | Supervisor accepted the task | Review delivery; publication is separate |
 | `cancelled` | Task cancelled | Files remain; direct resume is unsupported |
 
-Normal review/rework rounds are unlimited. `maxAttempts` defaults to 5 and limits only cumulative recovery dispatches after `failed`, `interrupted` or `blocked`. Initial execution and normal rework do not consume it. Recovery needs structured diagnostic feedback. Plan updates, normal completion and daemon restarts do not reset this count.
+Normal review/rework rounds are unlimited. `maxAttempts` defaults to 5 and limits only cumulative recovery dispatches after `failed`, `interrupted` or `blocked`. Initial execution and normal rework do not consume it, and neither do the first two consecutive step-limit continuations or a redispatch after an invalid report. Recovery needs structured diagnostic feedback. Plan updates, normal completion and daemon restarts do not reset this count.
 
 At the recovery limit, diagnose or take over a local fix rather than recreating the same task. `workflow_status` separates total `attempts` from `recoveryAttempts`, `recoveryAttemptLimit` and `remainingRecoveryAttempts`. Legacy tasks without a recovery count start that count at zero while preserving history.
 
@@ -129,7 +130,9 @@ Delivery should include the task/issue, branch and base commit, actual verificat
 | `report.json` | Validated worker report, not independent acceptance |
 | `worker-report.md` | Human-readable report summary |
 | `verify-*.log` | Actual supervisor verification output |
+| `amendment-*.json` | Supervisor-side changes to checks, scope or resources, with before/after values |
 | `events.jsonl` | Dispatch, plan and review events |
+| `.runtime/archive/<task-id>/` | The same records for archived tasks |
 
 Read both diffs and new files. A completion claim is insufficient. Missing toolchains or blocked checks must not be reported as passing.
 
@@ -141,7 +144,9 @@ Before parallel work, have the supervisor read `workflow_capacity` and state pla
 
 Record important decisions/repairs/risks/next steps with `workflow_note_add`. After context resets use `workflow_handoff` to recover persisted plans/history and artifact references across up to eight tasks, even after the original directory changes branches. This is a review/report outline, not current source validation. See the [protocol](protocol.md) for fields and limits.
 
-Choose the provider when creating a task and configure its key. Worker API usage is separate from supervisor subscriptions; a custom provider's reported `cost=0` does not mean free service.
+Choose the provider when creating a task and configure its key. Worker API usage is separate from supervisor subscriptions; a custom provider's reported `cost=0` does not mean free service. Add `pricing` (`currency`, `inputPerMillion`, `outputPerMillion`, optional `cacheReadPerMillion`) to a provider entry to have cost estimated from reported tokens, and set `resources.tokenBudget` on a task or `limits.tokenBudget` in a repository profile to stop a task that spends more than intended.
+
+`workerSteps` (default 150) is the model-step budget of one run and `maxWorkerSteps` (default 600) the most a task may request; `maxStepContinuations` (default 2) is how many times in a row a step-limited run may continue without diagnostic feedback. Toolchain variables a worker needs, such as an SDK root, go in the task's `environment` or the repository profile's `defaults.environment`, not in the daemon's environment by hand.
 
 An existing task's provider and baseline are part of its execution identity and cannot be changed directly. Plan any migration explicitly, handling existing changes. Editing global model settings does not migrate a persisted session.
 
@@ -164,8 +169,12 @@ npm run start
 | Missing key | Fill `.env.local`, then restart; do not put keys in prompts |
 | 401/403 or unavailable model | Check key region, endpoint and model access before retrying |
 | 429 | Diagnose rate/quota limits; reduce parallelism or wait |
-| Invalid JSON or report version | Inspect raw response and protocol; do not accept plain text as success |
-| Toolchain blocker | Inspect logs and required environment; do not omit acceptance checks |
+| Invalid report (`needs_changes`, `report_invalid`) | The work is preserved: review the diff and dispatch again. Inspect `reportSubmissions` if it repeats; do not accept plain text as success |
+| Repeated step-limit stops | The task is too large for one run: split it or raise `workerSteps` with `workflow_plan_amend` |
+| `WORKER_TOKEN_BUDGET` | Review what was produced, then raise the budget only if the spend is acceptable |
+| Verification fails with a large exit code | Read `exitDetail` and `tail` in the check result; codes like `0xC0000005` are crashes, not test failures |
+| Out-of-scope edits (`scopeViolations`) | Have the worker revert them, or widen `allowedPaths` with `workflow_plan_amend` if intended |
+| Toolchain blocker | Inspect logs and required environment; put missing variables in `environment`; do not omit acceptance checks |
 | Branch/workspace already exists | Inspect the existing task and code before taking action |
 | Recovery budget exhausted | Diagnose or take over; do not recreate a task to bypass the limit |
 
@@ -177,4 +186,4 @@ For CLI troubleshooting, requests can be read from files to avoid shell JSON quo
 node dist/src/cli.js call TOOL_NAME --file C:/path/to/request.json
 ```
 
-See [setup](getting-started.md), [protocol](protocol.md), [supervisor rules](../../skills/orchestrate-code/SKILL.md) and [architecture](architecture.md).
+See [setup](getting-started.md), [protocol](protocol.md), [supervisor rules](../../skills/orchestrate-code/SKILL.md), the [supervisor reference](supervisor-reference.md) and [architecture](architecture.md).

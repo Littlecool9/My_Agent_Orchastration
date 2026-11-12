@@ -54,6 +54,23 @@ test('a stalled worker hits the total deadline and cancellation interrupts the p
   await delay(5); controller.abort(new Error('fixture cancelled'));
   await assert.rejects(waiting, /abort|cancelled/i);
 });
+test('an abort during the polling pause reports the signal reason, not a generic AbortError', async () => {
+  const f = fixture(() => ({ messages: [], status: 'busy' }));
+  const controller = new AbortController();
+  const waiting = promptAsync(f.request, 'fixture', {}, { timeoutMs: 10000, pollMs: 5000, signal: controller.signal });
+  await delay(50); controller.abort(new Error('WORKER_MEMORY_LIMIT: job commit limit reached'));
+  await assert.rejects(waiting, (error: unknown) => String(error) === 'Error: WORKER_MEMORY_LIMIT: job commit limit reached');
+});
+test('each poll reports the model steps of this submission and a snapshot observer can stop the run', async () => {
+  const f = fixture((poll, id) => ({ messages: [assistant('previous-turn'), assistant(id, 'tool-calls'), ...(poll >= 2 ? [{ ...assistant(id), info: { ...assistant(id).info, id: 'second-' + id } }] : [])], status: poll >= 2 ? 'idle' : 'busy' }));
+  const seen: number[] = [];
+  const result = await promptAsync(f.request, 'fixture', {}, { ...options(), onSnapshot: (_, turn) => seen.push(turn.length) });
+  assert.deepEqual(seen, [1, 2]); assert.equal(result.steps, 2);
+  const controller = new AbortController(); const busy = fixture(() => ({ messages: [], status: 'busy' }));
+  await assert.rejects(promptAsync(busy.request, 'fixture', {}, { timeoutMs: 10000, pollMs: 1, signal: controller.signal,
+    onSnapshot: () => controller.abort(new Error('WORKER_TOKEN_BUDGET: fixture')) }), /WORKER_TOKEN_BUDGET/);
+  assert.equal(busy.counts().polls, 1);
+});
 test('model errors and persistent polling errors cannot become completion', async () => {
   const f = fixture((_, id) => ({ messages: [{ ...assistant(id), info: { ...assistant(id).info, error: { message: 'model refused' } } }], status: 'idle' }));
   await assert.rejects(promptAsync(f.request, 'fixture', {}, options()), /model refused/);

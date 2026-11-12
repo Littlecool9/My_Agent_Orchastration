@@ -41,7 +41,7 @@ When nothing is running or verifying, run `npm run stop` followed by `npm run st
 
 ## Select verification
 
-Say “Choose verification based on the change risk; a full suite is not required.” The supervisor records strategy, rationale, commands and `omittedCoverage` through `workflow_verify.selection`, without rewriting the task plan. The default `commands_required` policy requires a passing independent command. A `review_allowed` contract permits explicit review-only acceptance with code evidence and omitted coverage; see [repository preferences](repository-preferences.md).
+Say “Choose verification based on the change risk; a full suite is not required.” The supervisor records strategy, rationale, commands and `omittedCoverage` through `workflow_verify.selection`, without rewriting the task plan. A failed check shows the end of its output directly in the task status. The supervisor can run all checks past a failure (`continueOnFailure`), rerun only the failed ones on unchanged source (`rerun=failed`), and correct a wrong planned check with `workflow_plan_amend` without discarding the worker's report. The default `commands_required` policy requires a passing independent command. A `review_allowed` contract permits explicit review-only acceptance with code evidence and omitted coverage; see [repository preferences](repository-preferences.md).
 
 ## Wait for a result and stop verification
 
@@ -52,7 +52,7 @@ node dist/src/cli.js wait <task-id>
 node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeout-ms 60000
 ```
 
-The default waits indefinitely until any selected task needs supervisor attention: review, rework, replan, a blocker, acceptance, failure, cancellation or interruption. Up to eight task IDs are supported. `--until change` waits for a revision change; without `--after`, it takes the initial snapshot as the baseline. Output is JSON. Exit 0 means the condition was reached, not that the task passed. Timeout exits 2; Ctrl+C exits 130 and only stops waiting. The CLI retries transient read connections without resubmitting work. Automatic supervisor wakeup still requires a host notification integration.
+The default waits indefinitely until any selected task needs supervisor attention: review, rework, replan, a blocker, acceptance, failure, cancellation or interruption. The result's `attention` field names those tasks. Up to eight task IDs are supported. Tasks that were already finished when the wait started are ignored, and `--after <task-id>=<revision>` marks a task as already seen, so the same list can be reused while one task is under review and others still run. `--until change` waits for a revision change; without `--after`, it takes the initial snapshot as the baseline. Output is JSON. Exit 0 means the condition was reached, not that the task passed. Timeout exits 2; Ctrl+C exits 130 and only stops waiting. The CLI retries transient read connections without resubmitting work. Automatic supervisor wakeup still requires a host notification integration.
 
 Ask the supervisor to use `workflow_verify_stop` with `{id,reason}` to stop just verification. It waits for the check process tree to exit, preserves completed results and returns to `awaiting_review`. Each round has its own artifact and logs, listed by `workflow_status`; later rounds do not overwrite them. A stopped round does not satisfy verification for acceptance. If the round already finished, stopping it leaves the result unchanged.
 
@@ -60,9 +60,27 @@ Supervisor integration repairs and external tests can be appended using `workflo
 
 The first workflow task automatically creates a minimal local profile if none exists; no profile setup is required from the user. The Skill can also call `workflow_repository_init` with just the repository path before planning. Existing settings are preserved, and unknown preferences inherit defaults. Repository-specific scripts should be maintained by their owning repository. Optional local scripts and profiles alongside the Skill live under `skills/orchestrate-code/repositories.local/<repository-id>/`, with `profile.json` and `scripts/`; this directory is ignored by Git. Use `workflow_repository_config` / `workflow_repository_config_update` to inspect or explicitly change preferences. New tasks automatically inherit them, with a frozen contract snapshot. Only ID, repository, goal and acceptance are mandatory task inputs. See [repository preferences](repository-preferences.md) for defaults, overrides, hard limits and migration.
 
+## Progress, cost and tidying up
+
+Ask “How far along is it?” and the supervisor reads `workflow_status` for the running task: elapsed time, model steps used against the budget, tokens so far, the last tool call and how long the worker has been idle. Checking progress does not interrupt the worker.
+
+Each run has a step budget (`workerSteps`, 150 by default). A task that keeps running out of steps is too large for one run: ask the supervisor to split it or to raise the budget for that task. If more tasks are ready than there are worker slots, the supervisor can queue the extra dispatches; they start by themselves as slots free.
+
+Reported cost is 0 for most custom endpoints. To get an estimate, add list prices to that provider's entry in the effective configuration, and optionally give a task a `tokenBudget`:
+
+```json
+"pricing": { "currency": "CNY", "inputPerMillion": 2, "outputPerMillion": 8, "cacheReadPerMillion": 0.5 }
+```
+
+The numbers above are placeholders; use your provider's current prices per million tokens. Restart the daemon after editing the configuration. The estimate is not an invoice.
+
+`workflow_status` without a task ID lists only unfinished tasks. Ask the supervisor to archive finished ones when the list of all tasks grows; records and branches are kept. Removing worktree directories is a separate, explicit choice.
+
 ## Resume interrupted work
 
 Read `workflow_status` first. Do not recreate the task or worktree. For `failed`, `interrupted` or `blocked`, inspect existing changes and supply structured diagnostic feedback matching the current plan and acceptance IDs to `workflow_dispatch`. Continue the original session. For `needs_replan`, update the plan first.
+
+Two cases need no diagnosis. A run that only used up its step budget is `blocked` with `continuation.reason=step_limit`: dispatching again continues the same session, up to twice in a row, without spending recovery budget. A run that finished its work but could not produce a valid report is `needs_changes` with `continuation.reason=report_invalid`: review the diff, then dispatch again as ordinary rework.
 
 Before resuming, the worker archives and removes unreplayable empty assistant messages, retaining tool history. If repair fails, fix the workflow instead of repeatedly dispatching or manually editing its database.
 
@@ -75,6 +93,9 @@ OpenCode uses asynchronous submission with short polling requests, while `taskTi
 | New task | “Implement … from … with these acceptance criteria …” |
 | Plan first | “Investigate and propose a plan; wait for approval before editing.” |
 | Progress | “Summarize progress, blockers and the next step.” |
+| Fix a wrong check or widen scope | “The planned check command is wrong / this file is in scope. Amend the task without restarting the worker.” |
+| Rerun a flaky check | “Rerun only the failed check and say that it was rerun.” |
+| Tidy up | “List unfinished tasks. Archive the accepted and cancelled ones.” |
 | Rework | “This requirement is unmet: … Inspect it and send concrete feedback.” |
 | New requirement | “Add … First check whether the plan must change.” |
 | Resume | “Inspect the previous task and its changes; continue without starting over.” |

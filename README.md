@@ -10,7 +10,9 @@ The project is under active development. Worker execution currently requires **W
 - Per-repository preferences with automatic contract resolution, immutable snapshots and explicit validation policy.
 - Isolated Git worktrees, a new branch in the original checkout, or the current branch.
 - Persistent tasks and sessions for review, rework and interrupted-run recovery.
-- Incremental worker checks and independent supervisor verification.
+- Incremental worker checks and independent supervisor verification, with failure tails and reruns of only the failed checks.
+- Live run progress, a dispatch queue, per-run step budgets, optional token budgets and cost estimates from your own list prices.
+- Runs that only ran out of steps or produced an unusable report resume without spending the recovery budget.
 - DeepSeek for new tasks by default, with explicit Kimi selection.
 - A default 3 GiB committed-memory limit per worker and its ordinary build/test descendants.
 
@@ -62,6 +64,7 @@ After local source changes or a new release, double-click `update.cmd` or run `n
 | Recovery, milestones and troubleshooting | [Advanced guide](docs/en/advanced-guide.md) | [进阶使用](docs/zh-CN/advanced-guide.md) |
 | Runtime behavior and limitations | [Architecture](docs/en/architecture.md) | [架构与执行行为](docs/zh-CN/architecture.md) |
 | Task contracts and reports | [Protocol](docs/en/protocol.md) | [交接协议](docs/zh-CN/protocol.md) |
+| Exact supervisor-side rules | [Supervisor reference](docs/en/supervisor-reference.md) | [主控参考](docs/zh-CN/supervisor-reference.md) |
 
 ## Repository layout
 

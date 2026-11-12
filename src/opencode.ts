@@ -5,9 +5,9 @@ import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { killTree } from './process.js';
-import { redact } from './config.js';
-import type { Config, Task, ReportSubmission } from './schema.js';
-import { reportJsonSchema, taskContract } from './protocol.js';
+import { applyEnvironment, redact } from './config.js';
+import type { Config, Task, ReportSubmission, WorkerProgress, Pricing } from './schema.js';
+import { reportJsonSchema, reportTemplate, taskContract } from './protocol.js';
 import { promptAsync } from './opencode-session.js';
 import { repairSessionHistory } from './opencode-history.js';
 import { memoryGuardLaunch, readMemoryReport, workerExitError } from './memory-guard.js';
@@ -15,9 +15,21 @@ import { submitReport } from './report-submission.js';
 
 export interface WorkerResult { report: unknown; transcript: unknown; tokens: number; cost: number }
 export interface Worker {
-  run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void): Promise<WorkerResult>;
+  run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void, onProgress?: (progress: WorkerProgress) => void): Promise<WorkerResult>;
   cancel(id: string): Promise<void>;
   close(): Promise<void>;
+}
+export function workerStepLimit(task: Task, config: Config): number {
+  return Math.min(task.spec.resources?.workerSteps ?? config.workerSteps, config.maxWorkerSteps);
+}
+// Reported input tokens exclude cache reads, which are priced separately when a rate is configured.
+export function pricedCost(messages: any[], pricing: Pricing | undefined): number {
+  if (!pricing) return 0;
+  return messages.reduce((sum, m) => {
+    const t = m.info?.tokens ?? {};
+    return sum + ((t.input ?? 0) * pricing.inputPerMillion + ((t.output ?? 0) + (t.reasoning ?? 0)) * pricing.outputPerMillion
+      + (t.cache?.read ?? 0) * (pricing.cacheReadPerMillion ?? pricing.inputPerMillion)) / 1e6;
+  }, 0);
 }
 export function opencodeExecutable(root: string): { command: string; args: string[] } {
   const platform = process.platform === 'win32' ? 'windows' : process.platform;
@@ -29,13 +41,16 @@ export function opencodeExecutable(root: string): { command: string; args: strin
   if (!existsSync(script)) throw new Error('OpenCode is not installed locally. Run npm ci first.');
   return { command: process.execPath, args: [script] };
 }
-export function workerEnv(root: string, config: Config, providerID: string, input: NodeJS.ProcessEnv, password: string, stateRoot: string, pinned?: Config['providers'][string]): NodeJS.ProcessEnv {
+export function workerEnv(root: string, config: Config, providerID: string, input: NodeJS.ProcessEnv, password: string, stateRoot: string, pinned?: Config['providers'][string],
+  options: { steps?: number; environment?: Record<string, string> } = {}): NodeJS.ProcessEnv {
   const p = pinned ?? config.providers[providerID]; if (!p) throw new Error('Unknown provider');
-  const env: NodeJS.ProcessEnv = {};
+  const inherited: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(input)) {
     if (/(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key) || /^(OPENAI|ANTHROPIC|CLAUDE|CODEX|GH_|GITHUB_|OPENCODE_)/i.test(key)) continue;
-    env[key] = value;
+    inherited[key] = value;
   }
+  // Contract environment names are schema-checked against the same credential patterns; the control variables below still win.
+  const env = applyEnvironment(inherited, options.environment);
   for (const dir of ['data', 'config', 'cache', 'state']) mkdirSync(path.join(stateRoot, dir), { recursive: true });
   Object.assign(env, {
     WORKFLOW_API_KEY: input[p.apiKeyEnv] ?? '',
@@ -65,7 +80,7 @@ export function workerEnv(root: string, config: Config, providerID: string, inpu
     enabled_providers: ['workflow'], provider: { workflow: provider }, autoupdate: false, share: 'disabled',
     plugin: [], mcp: {}, permission, default_agent: 'executor',
     agent: { build: { disable: true }, plan: { disable: true }, general: { disable: true }, explore: { disable: true }, scout: { disable: true },
-      executor: { mode: 'primary', description: 'Scoped implementation worker', prompt: readFileSync(path.join(root, 'prompts/executor.txt'), 'utf8'), permission: workerPermission, steps: 150 },
+      executor: { mode: 'primary', description: 'Scoped implementation worker', prompt: readFileSync(path.join(root, 'prompts/executor.txt'), 'utf8'), permission: workerPermission, steps: options.steps ?? config.workerSteps },
       reporter: { mode: 'primary', description: 'Report-only resubmission without tools', prompt: readFileSync(path.join(root, 'prompts/reporter.txt'), 'utf8'), permission: { '*': 'deny' }, steps: 2 },
       investigator: { mode: 'primary', description: 'Read-only repository investigator', prompt: readFileSync(path.join(root, 'prompts/investigator.txt'), 'utf8'), permission, steps: 50 } },
   });
@@ -79,7 +94,9 @@ async function freePort(): Promise<number> {
   });
 }
 export function workerPrompt(task: Task): string {
-  return 'CURRENT_TASK_CONTRACT\n' + JSON.stringify(taskContract(task), null, 2) + '\nEND_TASK_CONTRACT\nREQUIRED_REPORT_SCHEMA\n' + JSON.stringify(reportJsonSchema()) + '\nEND_REPORT_SCHEMA\nFollow this revision. Finish with exactly one JSON report object, no markdown fences or extra text.';
+  return 'CURRENT_TASK_CONTRACT\n' + JSON.stringify(taskContract(task), null, 2) + '\nEND_TASK_CONTRACT\nREQUIRED_REPORT_SCHEMA\n' + JSON.stringify(reportJsonSchema()) + '\nEND_REPORT_SCHEMA\n'
+    + 'REPORT_TEMPLATE\n' + JSON.stringify(reportTemplate(task), null, 2) + '\nEND_REPORT_TEMPLATE\n'
+    + 'Follow this revision. Finish with exactly one JSON report object, no markdown fences or extra text. Start from REPORT_TEMPLATE: keep its identity values, criterion IDs, check names and exactly its keys, and replace each "a | b" choice with one value. Put any extra remark inside an evidence string, never in a new key.';
 }
 
 export class OpenCodeWorker implements Worker {
@@ -87,13 +104,14 @@ export class OpenCodeWorker implements Worker {
   constructor(readonly root: string, readonly config: Config, readonly env: NodeJS.ProcessEnv) {}
   async repairSession(task: Task): Promise<WorkerResult> {
     if (!task.sessionID) throw new Error('Session repair requires an existing session');
-    return this.run(task, () => { throw new Error('Session repair must not create a session'); }, undefined, true);
+    return this.run(task, () => { throw new Error('Session repair must not create a session'); }, undefined, undefined, true);
   }
-  async run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void, repairOnly = false): Promise<WorkerResult> {
+  async run(task: Task, onSession: (id: string) => void, onSubmission?: (state: ReportSubmission) => void, onProgress?: (progress: WorkerProgress) => void, repairOnly = false): Promise<WorkerResult> {
     const stateRoot = path.join(this.root, '.runtime', 'workers', task.spec.id);
     mkdirSync(stateRoot, { recursive: true });
     const password = randomBytes(24).toString('hex');
-    const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot, task.executionProvider);
+    const stepLimit = workerStepLimit(task, this.config);
+    const env = workerEnv(this.root, this.config, task.spec.provider, this.env, password, stateRoot, task.executionProvider, { steps: stepLimit, environment: task.spec.environment });
     const port = await freePort(); const executable = opencodeExecutable(this.root);
     const memoryReport = path.join(stateRoot, 'memory-' + task.attempts + '-' + (repairOnly ? 'repair-' + Date.now() : task.runId) + '.json');
     const guarded = memoryGuardLaunch(this.root, memoryReport + '.launch.json', memoryReport, Math.min(task.spec.resources?.workerMemoryLimitMB ?? Infinity, this.config.workerMemoryLimitMB ?? 3072),
@@ -146,8 +164,25 @@ export class OpenCodeWorker implements Worker {
       const deadline = Date.now() + Math.min(task.spec.resources?.taskTimeoutMinutes ?? Infinity, this.config.taskTimeoutMinutes) * 60000;
       const usage = (messages: any[]) => {
         const fresh = messages.filter(m => !seen.has(m.info.id) && m.info.role === 'assistant');
+        const reported = fresh.reduce((sum, m) => sum + (m.info.cost ?? 0), 0);
         return { tokens: fresh.reduce((sum, m) => sum + (m.info.tokens?.input ?? 0) + (m.info.tokens?.output ?? 0) + (m.info.tokens?.reasoning ?? 0), 0),
-          cost: fresh.reduce((sum, m) => sum + (m.info.cost ?? 0), 0) };
+          // Custom endpoints report cost 0; fall back to the user's configured list prices.
+          cost: reported > 0 ? reported : pricedCost(fresh, model.pricing) };
+      };
+      // Progress stays in memory: saving it would wake every revision waiter once per poll.
+      const tokenBudget = task.spec.resources?.tokenBudget; let signature = ''; let lastActivityAt = new Date().toISOString(); let mainSteps = 0;
+      const observe = (phase: WorkerProgress['phase']) => (value: any[], turn: any[]) => {
+        lastTranscript = value;
+        if (phase === 'working') mainSteps = turn.length;
+        const last = value.at(-1); const part = last?.parts?.at(-1);
+        const next = [value.length, last?.parts?.length, part?.type, part?.state?.status, last?.info?.time?.completed].join(':');
+        if (next !== signature) { signature = next; lastActivityAt = new Date().toISOString(); }
+        const totals = usage(value);
+        const tool = turn.flatMap(m => m.parts ?? []).findLast((p: any) => p.type === 'tool');
+        onProgress?.({ phase, steps: mainSteps, stepLimit, ...totals, lastActivityAt,
+          ...(tool ? { lastTool: { tool: String(tool.tool), status: tool.state?.status, title: typeof tool.state?.title === 'string' ? redact(tool.state.title, { ...this.env, ...env }).slice(0, 200) : undefined } } : {}) });
+        if (tokenBudget && task.totalTokens + totals.tokens > tokenBudget && !entry.controller.signal.aborted)
+          entry.controller.abort(new Error(`WORKER_TOKEN_BUDGET: task used ${task.totalTokens + totals.tokens} reported tokens, above resources.tokenBudget=${tokenBudget}. Work is preserved; review it, then raise the budget with workflow_plan_amend before resuming.`));
       };
       const { response, transcript } = await promptAsync(request, entry.session!, {
         model: { providerID: 'workflow', modelID: model.model }, agent: task.spec.mode === 'investigate' ? 'investigator' : 'executor',
@@ -155,7 +190,7 @@ export class OpenCodeWorker implements Worker {
         // (OutputFormatJsonSchema Class encoding). Keep plain transport and enforce
         // the identical report schema in our own protocol, including on resume.
         parts: [{ type: 'text', text: workerPrompt(task) }],
-      }, { timeoutMs: Math.max(1, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
+      }, { timeoutMs: Math.max(1, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: observe('working') });
       writeFileSync(path.join(stateRoot, `response-${task.attempts}.json`), redact(JSON.stringify(response, null, 2), { ...this.env, ...env }));
       if (response.info?.error) throw new Error(`Worker failed: ${JSON.stringify(response.info.error)}`);
       if (response.info?.finish && !['stop', 'end_turn'].includes(response.info.finish)) throw new Error(`Worker stopped without final completion: ${response.info.finish}`);
@@ -167,7 +202,7 @@ export class OpenCodeWorker implements Worker {
         const repaired = await promptAsync(request, entry.session!, {
           model: { providerID: 'workflow', modelID: model.model }, agent: 'reporter',
           parts: [{ type: 'text', text: workerPrompt(task) + '\nREPORT_ONLY_RESUBMISSION\nValidation error:\n' + diagnostic + '\nSubmit only the corrected report using existing evidence. All tools are disabled.' }],
-        }, { timeoutMs: Math.min(120000, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: value => { lastTranscript = value; } });
+        }, { timeoutMs: Math.min(120000, deadline - Date.now()), signal: entry.controller.signal, onSnapshot: observe('report_repair') });
         writeFileSync(path.join(stateRoot, `report-repair-response-${task.attempts}.json`), redact(JSON.stringify(repaired.response, null, 2), { ...this.env, ...env }));
         const totals = usage(repaired.transcript);
         return { text: (repaired.response.parts ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n'),

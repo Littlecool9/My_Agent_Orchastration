@@ -42,12 +42,12 @@ Binding uses Git's canonical common directory, including Windows case normalizat
 
 ## Defaults and requirements
 
-- `defaults`: base/fetch references, branch prefix, provider, workspace mode, task mode, repeated non-goals, decisions, context references, steps, autonomy, constraints, allowed paths, worker/supervisor checks, verification policy and resource settings.
+- `defaults`: base/fetch references, branch prefix, provider, workspace mode, task mode, repeated non-goals, decisions, context references, steps, autonomy, constraints, allowed paths, worker/supervisor checks, verification policy, resource settings and `environment` (non-secret variables for the worker and verification commands, such as `{"VCPKG_ROOT":"D:/vcpkg","PATH":"D:/tools/bin;${PATH}"}`).
 - `requirements.constraints`: always appended and deduplicated, even when a task replaces default constraints. These are contract instructions, with the same review/cooperation boundaries as other task constraints.
 - `requirements.verificationPolicy=commands_required`: prevents tasks from weakening command-based acceptance.
-- `limits`: repository caps for `workerMemoryLimitMB` and `taskTimeoutMinutes`. The machine configuration is also a hard ceiling; task/default values above the smaller ceiling are rejected. Omitted resources use the effective ceiling. Worker startup and overall worker execution respect the smaller task/current-machine budgets. These settings do not add a memory guard to supervisor verification commands.
+- `limits`: repository caps for `workerMemoryLimitMB`, `taskTimeoutMinutes`, `workerSteps` and `tokenBudget`. The machine configuration is also a hard ceiling for memory, time and steps (`maxWorkerSteps`); task/default values above the smaller ceiling are rejected. Omitted memory and time use the effective ceiling, omitted `workerSteps` uses the machine default, and `tokenBudget` is unset unless the repository caps it, in which case the cap is also the default. Worker startup and overall worker execution respect the smaller task/current-machine budgets. These settings do not add a memory guard to supervisor verification commands.
 
-Task-supplied scalar values and arrays replace defaults, including explicit empty arrays; resources merge by field. Put rules that must survive overrides in `requirements.constraints`. A temporary override affects that task only. Persistent changes use the profile update operation.
+Task-supplied scalar values and arrays replace defaults, including explicit empty arrays; resources and environment variables merge by name. Environment names that look like credentials are rejected: keys stay in `.env.local`, never in a profile or contract. Put rules that must survive overrides in `requirements.constraints`. A temporary override affects that task only. Persistent changes use the profile update operation.
 
 ## Create a short contract
 
@@ -71,6 +71,8 @@ The task stores the resolved `TaskSpec` and `configuration-v<planRevision>.json`
 ## Change plans and preferences
 
 `workflow_plan_update` accepts a partial `spec`, for example `{goal:"Clarified goal"}`, with task ID, `expectedPlanRevision` and `changeReason`. The next plan revision is automatic unless explicitly supplied. It resolves against the task's frozen profile and retains explicit task overrides. Older configuration artifacts remain available.
+
+To change only the supervisor's planned `checks`, `allowedPaths` or `resources`, use `workflow_plan_amend {id,expectedPlanRevision,patch,reason}` instead: it keeps the plan revision and the worker's report, and later plan updates keep the amended values.
 
 Use `refreshRepositoryProfile=true` on an explicit plan update to adopt current preferences. Frozen execution identity stays unchanged; its provenance may point to `previous_plan`. Editing a live profile alone never changes a running or existing task. Active/accepted/terminal plan restrictions remain in force.
 

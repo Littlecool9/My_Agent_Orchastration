@@ -64,6 +64,9 @@ The effective file is `workflow.local.json` when present, otherwise `workflow.co
 | `maxAttempts` | 5 abnormal recovery dispatches; normal rework does not consume this budget |
 | `taskTimeoutMinutes` | 90 minutes per run |
 | `workerMemoryLimitMB` | 3072 MiB of committed memory per worker and its ordinary descendants |
+| `workerSteps` / `maxWorkerSteps` | Optional. 150 model steps per run by default; a task may request up to 600 |
+| `maxStepContinuations` | Optional. 2 consecutive continuations after a step-limit stop without diagnostic feedback |
+| Provider `pricing` | Optional. `currency`, `inputPerMillion`, `outputPerMillion`, `cacheReadPerMillion`; used to estimate cost when the endpoint reports none |
 | Default provider | `deepseek`, configured model `deepseek-flash` |
 | Optional provider | `kimi`, configured model `kimi-k3` |
 

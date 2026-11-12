@@ -43,6 +43,37 @@ test('a reconciled integration is terminal for a blocking wait', async () => {
   assert.equal(result.reason, 'attention'); assert.equal(result.tasks[0]!.status, 'integrated');
 });
 
+test('tasks already finished when a multi-task wait starts do not make it return, but a new terminal state does', async () => {
+  const snapshots: WaitTask[][] = [
+    [{ id: 'done', status: 'accepted', revision: 9 }, { id: 'live', status: 'running', revision: 2 }, { id: 'other', status: 'running', revision: 1 }],
+    // A note added to the accepted task bumps its revision; that is not supervisor attention.
+    [{ id: 'done', status: 'accepted', revision: 10 }, { id: 'live', status: 'running', revision: 3 }, { id: 'other', status: 'running', revision: 1 }],
+    [{ id: 'done', status: 'accepted', revision: 10 }, { id: 'live', status: 'running', revision: 3 }, { id: 'other', status: 'cancelled', revision: 2 }],
+  ];
+  const result = await waitForTasks(['done', 'live', 'other'], async () => snapshots.shift()!, { until: 'attention', after: {}, timeoutMs: 0 });
+  assert.equal(result.reason, 'attention'); assert.deepEqual(result.attention, ['other']); assert.equal(snapshots.length, 0);
+});
+
+test('an explicit cursor marks a reviewable task as already seen until it changes again', async () => {
+  const snapshots: WaitTask[][] = [
+    [{ id: 'reviewing', status: 'awaiting_review', revision: 7 }, { id: 'live', status: 'running', revision: 2 }],
+    [{ id: 'reviewing', status: 'verifying', revision: 8 }, { id: 'live', status: 'running', revision: 2 }],
+    [{ id: 'reviewing', status: 'awaiting_review', revision: 9 }, { id: 'live', status: 'running', revision: 2 }],
+  ];
+  const result = await waitForTasks(['reviewing', 'live'], async () => snapshots.shift()!, { until: 'attention', after: { reviewing: 7 }, timeoutMs: 0 });
+  assert.deepEqual(result.attention, ['reviewing']); assert.equal(result.tasks[0]!.revision, 9);
+  // Without the cursor the same first snapshot returns at once, as before.
+  const immediate = await waitForTasks(['reviewing', 'live'], async () => [{ id: 'reviewing', status: 'awaiting_review', revision: 7 }, { id: 'live', status: 'running', revision: 2 }],
+    { until: 'attention', after: {}, timeoutMs: 0 });
+  assert.deepEqual(immediate.attention, ['reviewing']);
+});
+
+test('a queued dispatch that could not start needs attention even though its status is not an attention state', async () => {
+  const result = await waitForTasks(['one'], async () => [{ id: 'one', status: 'ready', revision: 4, queueError: 'Queued dispatch could not start: branch changed' }],
+    { until: 'attention', after: {}, timeoutMs: 0 });
+  assert.deepEqual(result.attention, ['one']);
+});
+
 test('a cursor ahead of the initial snapshot remains a lower bound across heartbeats', async () => {
   let revision = 1;
   const result = await waitForTasks(['one'], async () => [{ id: 'one', status: 'verifying', revision: revision++ }],

@@ -51,7 +51,7 @@ API Key 只填一次，文件在：
 
 ## 主控如何选测试
 
-你可以直接说“按改动风险选择验证，不用跑全量”。主控通过 workflow_verify 的 selection 记录策略、理由、检查命令和 omittedCoverage；无需为一次测试选择重写整个任务计划。默认 `commands_required` 要求独立命令通过；`review_allowed` 合同允许主控明确选择仅代码审查，并记录代码证据和未覆盖范围，见[仓库偏好](repository-preferences.md)。
+你可以直接说“按改动风险选择验证，不用跑全量”。主控通过 workflow_verify 的 selection 记录策略、理由、检查命令和 omittedCoverage；无需为一次测试选择重写整个任务计划。失败的检查会把输出末尾直接放进任务状态。主控可以让一轮验证在失败后继续跑完（`continueOnFailure`），在源码没变时只重跑失败的检查（`rerun=failed`），也可以用 `workflow_plan_amend` 改正写错的计划检查，而不丢弃 worker 的报告。默认 `commands_required` 要求独立命令通过；`review_allowed` 合同允许主控明确选择仅代码审查，并记录代码证据和未覆盖范围，见[仓库偏好](repository-preferences.md)。
 
 ## 等待结果与停止验证
 
@@ -62,7 +62,7 @@ node dist/src/cli.js wait <task-id>
 node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeout-ms 60000
 ```
 
-默认不限总时长，任一所选任务进入需要主控介入的状态时返回：待审查、返工、重规划、阻塞、验收完成、失败、取消或中断。最多支持八个任务 ID。`--until change` 等待 revision 变化；未传 `--after` 时以首次快照为基线。输出为 JSON。退出码 0 表示等待条件满足，不代表任务通过验收；总超时退出码为 2，Ctrl+C 退出码为 130，只结束等待。CLI 会重试暂时断开的读取连接，不会重新派发任务。自动唤醒主控仍需宿主接入通知。
+默认不限总时长，任一所选任务进入需要主控介入的状态时返回：待审查、返工、重规划、阻塞、验收完成、失败、取消或中断。结果里的 `attention` 字段列出这些任务。最多支持八个任务 ID。等待开始时已经结束的任务会被忽略，`--after <task-id>=<revision>` 表示该任务已经看过，所以一个任务在审查、其它任务还在跑时，可以一直用同一份列表。`--until change` 等待 revision 变化；未传 `--after` 时以首次快照为基线。输出为 JSON。退出码 0 表示等待条件满足，不代表任务通过验收；总超时退出码为 2，Ctrl+C 退出码为 130，只结束等待。CLI 会重试暂时断开的读取连接，不会重新派发任务。自动唤醒主控仍需宿主接入通知。
 
 只想停止检查时，让主控调用 `workflow_verify_stop`，传入 `{id,reason}`。它等待检查进程树退出，保留已完成结果并回到 `awaiting_review`。每轮验证的独立工件和日志可在 `workflow_status` 中找到，后续验证不会覆盖旧轮次。中止的验证不满足验收要求；若该轮已经完成，停止操作保留其原结果。
 
@@ -70,9 +70,27 @@ node dist/src/cli.js wait <task-id> --until change --after <task-id>=12 --timeou
 
 第一次工作流任务发现没有 profile 时会自动最小建档，用户无需先做设置；Skill 也可在规划前只传仓库路径调用 `workflow_repository_init`。已有配置保留，未知偏好沿用默认值。仓库专用脚本优先由对应仓库维护。需要放在 Skill 旁边的本地脚本与 profile，统一存放在 `skills/orchestrate-code/repositories.local/<repository-id>/`，下设 `profile.json` 和 `scripts/`；该目录已加入 gitignore。通过 `workflow_repository_config` / `workflow_repository_config_update` 查看或明确修改偏好。新任务自动继承，并保存冻结的合同快照；创建时只必填 ID、仓库、目标和验收项。默认值、覆盖、硬上限及迁移见[仓库偏好](repository-preferences.md)。
 
+## 进度、成本与清理
+
+问一句“现在做到哪了”，主控会读取运行中任务的 workflow_status：已用时间、已用模型步数与预算、目前的 token、最近一次工具调用，以及 worker 已经空闲了多久。查看进度不会打断 worker。
+
+每轮运行有步数预算（workerSteps，默认 150）。一个任务总是把步数用完，说明它对单轮来说太大：让主控拆分，或者给这个任务调高预算。待派发的任务比 worker 槽位多时，主控可以让多出来的派发排队，有槽位空出时它们会自己启动。
+
+多数自定义端点上报的成本是 0。想要估算，就在有效配置里对应 provider 的条目中加上标价；还可以给任务设置 `tokenBudget`：
+
+```json
+"pricing": { "currency": "CNY", "inputPerMillion": 2, "outputPerMillion": 8, "cacheReadPerMillion": 0.5 }
+```
+
+上面的数字只是占位，请填你的供应商当前每百万 token 的价格。改完配置需要重启 daemon。估算值不是账单。
+
+不带任务 ID 的 workflow_status 只列出未完成的任务。全部任务越积越多时，让主控把已完成的归档；记录和分支都会保留。删除 worktree 目录是另一个需要你明确决定的操作。
+
 ## 执行中断后继续
 
 先查询 workflow_status，不要重建任务或 worktree。failed / interrupted / blocked 的任务，主控需要审查已有改动，并在 workflow_dispatch 中提供匹配当前计划版本和验收项 ID 的结构化诊断反馈；继续原 session。needs_replan 则先更新计划。
+
+有两种情况不需要诊断。只是把步数预算用完的运行，状态是 `blocked` 且 `continuation.reason=step_limit`：再派发一次就会在原会话里继续，可以连续两次，不消耗恢复额度。工作做完了但交不出合格报告的运行，状态是 `needs_changes` 且 `continuation.reason=report_invalid`：先看 diff，再按普通返工派发。
 
 恢复原会话前，后台会自动归档并删除无法重放的空 assistant 消息；工具调用记录保留。如果历史修复失败，应先修复工作流，不要直接反复派发或手工改数据库。
 
@@ -85,6 +103,9 @@ OpenCode 已改用异步提交和短轮询，整轮任务仍受 taskTimeoutMinut
 | 新任务 | /orchestrate-code 实现……，基线……，验收要求…… |
 | 先看计划 | /orchestrate-code 先调查并给我计划，等我批准再写代码 |
 | 看进度 | 查看当前任务，只汇总进展、阻塞和下一步 |
+| 改错的检查命令或放宽范围 | 计划里的检查命令写错了／这个文件应该在范围内，修订任务，不要让 worker 重跑 |
+| 重跑不稳定的检查 | 只重跑失败的那项检查，并在结论里说明重跑过 |
+| 清理 | 列出未完成的任务，把已验收和已取消的归档 |
 | 发现问题 | 这里不符合要求：……请检查并派回返工 |
 | 加需求 | 新增要求：……先判断是否需要修改计划 |
 | 第二天继续 | /orchestrate-code 恢复上次任务，先检查已有状态和改动，不要从头重做 |

@@ -64,6 +64,9 @@ MOONSHOT_API_KEY=你的本地Key
 | `maxAttempts` | 5 次异常恢复派发；正常返工不消耗此预算 |
 | `taskTimeoutMinutes` | 每轮最长 90 分钟 |
 | `workerMemoryLimitMB` | 每个 worker 及其正常后代进程共 3072 MiB 提交内存 |
+| `workerSteps` / `maxWorkerSteps` | 可选。每轮默认 150 个模型步；单个任务最多可申请 600 |
+| `maxStepContinuations` | 可选。步数用尽后可连续 2 次不带诊断反馈直接续跑 |
+| provider 的 `pricing` | 可选。`currency`、`inputPerMillion`、`outputPerMillion`、`cacheReadPerMillion`；端点不上报成本时用来估算 |
 | 默认供应商 | `deepseek`，配置模型 `deepseek-flash` |
 | 可选供应商 | `kimi`，配置模型 `kimi-k3` |
 

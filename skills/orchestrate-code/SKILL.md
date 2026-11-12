@@ -3,118 +3,198 @@ name: orchestrate-code
 description: Explicitly delegate a coding task or milestone to external OpenCode workers, then independently review their work and report results. Use when the user invokes this workflow.
 ---
 
+You stay the planner, supervisor and final reviewer. External OpenCode workers implement through the `agent-orchestrator` MCP tools. Use this workflow only when the user invokes it. Do not change the main model, authentication, provider endpoint or subscription login.
+
 ## Start here
 
-1. Call `workflow_config` first. Its `projectRoot` is the orchestrator installation, while your current directory is the target coding repository. Follow the returned `guidance` paths when the workflow's usage is unclear.
-2. Read the target repository's `CLAUDE.md` and its local instruction references (including `AGENTS.md`); if absent, read `AGENTS.md`. Apply relevant module instructions too. The orchestrator's root `AGENTS.md` is for maintaining the orchestrator, not a substitute for target project rules.
-3. Read `workflow_repository_config {repository}`. Initialize a missing profile with `workflow_repository_init {repository}`; do not interrupt the user for minimal bookkeeping. Inspect its defaults, requirements, effective limits and adjacent check recipes/scripts before inventing commands.
-4. For an existing task, read `workflow_status {id}` and its current contract before resuming. Otherwise create the plan, prepare, dispatch, wait, review actual code, independently verify, then accept or request rework.
-5. Before parallel planning, read `workflow_capacity {}`. After a context reset or when resuming multiple tasks, read `workflow_handoff {ids:[...]}` and referenced notes before continuing; verify current source separately.
+1. Call `workflow_config`. Its `projectRoot` is the orchestrator installation; your working directory is the target repository. If `executionEnabled` is false, stay in planning and review mode.
+2. Read the target repository's `CLAUDE.md` and the instruction files it references (including `AGENTS.md`); if absent, read `AGENTS.md`. The orchestrator's own `AGENTS.md` is about maintaining the orchestrator, not the target project.
+3. Read `workflow_repository_config {repository}`. If `profile` is null, call `workflow_repository_init {repository}` and continue; this is routine bookkeeping, not a question for the user.
+4. For an existing task, read `workflow_status {id}` before resuming. After a context reset or with several tasks, read `workflow_handoff {ids:[...]}`, then check the current source yourself.
+5. Before parallel work, read `workflow_capacity {}`.
+
+Edge cases, field-by-field rules and legacy behavior are in `<projectRoot>/docs/en/supervisor-reference.md`. Read it when this guide does not answer a question; never guess a tool's behavior.
+
+## Main path
+
+Create, prepare, dispatch, wait, review the code, verify independently, then accept or request rework.
+
+Create a task. Only `id`, `repository`, `goal` and `acceptance` are required; everything else inherits repository or built-in defaults:
+
+```json
+{ "spec": {
+  "id": "allocator-overflow",
+  "repository": "C:/path/to/project",
+  "goal": "Reject node ID allocation overflow instead of wrapping.",
+  "acceptance": [
+    { "id": "AC-01", "requirement": "Allocating past the upper limit returns an error." },
+    { "id": "AC-02", "requirement": "A regression test covers the boundary." }
+  ],
+  "allowedPaths": ["modules/allocator", "tests/allocator"],
+  "workerChecks": [{ "name": "allocator-tests", "command": "ctest", "args": ["--test-dir", "build", "-R", "allocator"], "timeoutMinutes": 10 }],
+  "checks": [{ "name": "allocator-and-graph", "command": "ctest", "args": ["--test-dir", "build", "-R", "allocator|graph"], "timeoutMinutes": 20 }]
+} }
+```
+
+Then `workflow_prepare {id}`, `workflow_dispatch {id}`, and wait in a background shell:
+
+```powershell
+node "<projectRoot>/dist/src/cli.js" wait allocator-overflow
+```
+
+When it returns, read `workflow_status {id}`, `workflow_diff {id}` and the changed files in the workspace. Run `workflow_verify {id}`, wait again, then decide.
+
+Request rework (same session, no round limit):
+
+```json
+{ "id": "allocator-overflow", "decision": "rework",
+  "rationale": "AC-02 is not met.", "evidence": ["tests/allocator/limits.cpp has no case at the upper bound"],
+  "feedback": { "planRevision": 1, "summary": "Add the boundary regression test",
+    "findings": [{ "criterionIds": ["AC-02"], "description": "No test allocates at the upper limit",
+      "evidence": ["tests/allocator/limits.cpp"], "requestedChange": "Add a test that allocates the last valid ID and then expects an error" }] } }
+```
+
+Accept, after reviewing the code and with a passing verification round on the current source:
+
+```json
+{ "id": "allocator-overflow", "decision": "accept",
+  "rationale": "Overflow path and boundary test reviewed; affected-module checks pass. Full matrix not run.",
+  "evidence": ["modules/allocator/ids.cpp:88", "verify-<run>-allocator-and-graph.log"] }
+```
 
 ## Capability index
 
 | Need | Tool or command and how to use it |
 |---|---|
-| Installation path, execution gate and provider settings | `workflow_config {}`; it also points to this guide, repository guidance and the update entry. |
-| Worker model choice | Read `workflow_config.providers` model/tags/keyPresent; select using user labels and pass `provider` plus `modelSelectionReason` at task creation. |
-| Parallel planning and resource bottlenecks | `workflow_capacity {}`; live shared slots, worker memory ceilings, verification processes and directory reservations. |
+| Installation path, execution gate, step budgets, provider settings | `workflow_config {}`; also points to this guide, the reference and the update entry. |
+| Worker model choice | Read `workflow_config.providers` model/tags/keyPresent/pricing; pass `provider` plus `modelSelectionReason` at task creation. |
+| Parallel planning and resource bottlenecks | `workflow_capacity {}`; free slots, queued dispatches, memory ceilings, active verification and directory reservations with `idleDays`. |
 | Reusable project settings and hard limits | `workflow_repository_config {repository}`; worktrees share the binding. |
 | Minimal first-use profile | `workflow_repository_init {repository}`; only an absolute repository path is needed. |
 | Explicit persistent preferences | `workflow_repository_config_update {repository,id,expectedRevision,preferences}`; preserve unrelated preferences. |
-| A new task | `workflow_task_create {spec:{id,repository,goal,acceptance}}` plus task-specific scope/checks; inherited defaults are frozen. |
-| Workspace preparation | `workflow_prepare {id}`; records the actual base and selected workspace mode. |
-| Start or resume a worker | `workflow_dispatch {id,feedback?}`; recovery needs structured diagnostic feedback. |
-| Progress and revision cursor | `workflow_status {id}`; retain the returned `revision`. |
-| Short MCP wait | `workflow_wait {ids,after,timeoutMs}`; each request is limited to 25 seconds. |
-| Continuous/background wait | `node "<projectRoot>/dist/src/cli.js" wait <id>`; see the waiting instructions below. |
-| Changed files and actual code review | `workflow_diff {id}`, then read the indicated workspace files. |
-| Contract, reports, verification logs or evidence | `workflow_artifact {id,name,offset?,length?}`; use names from status and bounded excerpts. |
-| Independent verification | `workflow_verify {id,selection?}`; selection changes the check scope without a plan update. |
-| Stop only verification | `workflow_verify_stop {id,reason}`; retains the task/report and completed checks. |
-| Append supervisor integration/check notes | `workflow_evidence_add {id,entry}`; records testimony, not automatic acceptance. |
-| Durable decisions, repairs, risks and next steps | `workflow_note_add {id,entry:{planRevision,kind,summary,detail?,relatedTaskIds?}}`; no workspace/branch requirement and no verification credit. |
-| Resume context or assemble a final report | `workflow_handoff {ids:[...]}`; persisted plans, dependency states, claims, checks, reviews and recent note/evidence references. |
-| Invalid worker report | One automatic tool-disabled resubmission in the same run; inspect `reportSubmissions` and its artifact if it fails. No recovery dispatch is consumed by the resubmission itself. |
-| Accept or request rework | `workflow_review {id,decision,rationale,evidence,feedback?,verification?}`; obey the contract's verification policy. |
-| Change the agreed plan | `workflow_plan_update {id,expectedPlanRevision,spec,changeReason}`; currently invalidates old evidence. |
-| Stop the entire task | `workflow_cancel {id}`; terminal cancellation preserves edits and history. |
-| Refresh an installed workflow | `node "<projectRoot>/scripts/update.mjs" --check`, then the same command without `--check`; see `docs/en/updating.md`. |
+| A new task | `workflow_task_create {spec}`; see the example above. Inherited defaults are frozen into the task. |
+| Workspace preparation | `workflow_prepare {id}`; records the actual base and workspace. |
+| Start or resume a worker | `workflow_dispatch {id,feedback?,queue?}`; `queue:true` waits for a slot instead of failing. |
+| Overview of unfinished tasks | `workflow_status {}`; compact list. Filter with `scope` (`active`, `all`, `archived`), `status`, `repository`, `limit`. |
+| One task's state and live progress | `workflow_status {id}`; while running, `run` shows elapsed time, steps used/limit, tokens, last tool and idle seconds. Keep the returned `revision`. |
+| Short MCP wait | `workflow_wait {ids,after,timeoutMs}`; at most 25 seconds per call. |
+| Continuous/background wait | `node "<projectRoot>/dist/src/cli.js" wait <id>...`; see Execute and supervise. |
+| Changed files and code review | `workflow_diff {id}`, then read the files in the indicated workspace. |
+| Contract, reports, verification logs, evidence | `workflow_artifact {id,name,offset?,length?}`; use names from status and bounded excerpts. |
+| Independent verification | `workflow_verify {id,selection?,continueOnFailure?,rerun?}`; failed checks carry the log tail in status. |
+| Stop only verification | `workflow_verify_stop {id,reason}`; keeps the task, report and completed checks. |
+| Fix a check command, widen scope, change a budget | `workflow_plan_amend {id,expectedPlanRevision,patch:{checks?,allowedPaths?,resources?},reason}`; keeps the worker report and session. |
+| Change the agreed plan | `workflow_plan_update {id,expectedPlanRevision,spec,changeReason}`; invalidates the report and old evidence. |
+| Supervisor integration/check notes | `workflow_evidence_add {id,entry}`; source-bound testimony, not acceptance. |
+| Durable decisions, repairs, risks, next steps | `workflow_note_add {id,entry:{planRevision,kind,summary,detail?,relatedTaskIds?}}`. |
+| Resume context or assemble a final report | `workflow_handoff {ids:[...]}`; persisted plans, claims, checks, reviews, amendments and recent notes. |
+| Accept or request rework | `workflow_review {id,decision,rationale,evidence,feedback?,verification?}`. |
+| Stop a task, or withdraw a queued dispatch | `workflow_cancel {id}` is terminal and keeps files; `workflow_cancel {id,scope:"queue"}` only leaves the queue. |
+| Tidy finished tasks | `workflow_archive {ids,removeWorktree?}`; only tasks the user regards as finished. |
+| Refresh an installed workflow | `node "<projectRoot>/scripts/update.mjs" --check`, then without `--check`; see `docs/en/updating.md`. |
 
-These are distinct operations: verification is asynchronous, cancelling a waiter only stops waiting, and `awaiting_review` is not acceptance. `integrated` records a historical delivery and does not satisfy the `accepted` dependency gate. Use available tool discovery if a listed MCP tool is not loaded; never invent a missing tool's behavior.
+Verification is asynchronous. Cancelling a waiter only stops waiting. `awaiting_review` is not acceptance. `integrated` records a historical delivery and does not satisfy the `accepted` dependency gate.
 
 ## Scope and resource syntax
 
-`allowedPaths` currently matches literal repository-relative files and directory prefixes, such as `CMakeLists.txt` and `modules/prefab`. It does not support `*`, `**` or other glob syntax. Check the values before creation; the current API can otherwise defer a scope error until verification. An empty list permits all paths. Resources cannot exceed the effective machine/repository limits returned by `workflow_repository_config`; a numeric schema maximum is not the current execution budget.
+`allowedPaths` takes literal repository-relative files and directory prefixes with forward slashes, such as `CMakeLists.txt` and `modules/prefab`. Globs (`*`, `?`), absolute paths, backslashes and `./..` segments are rejected when the task is created. An empty list permits all paths. If a run edits outside the scope, `workflow_status` lists `scopeViolations` as soon as the run ends: have the worker revert them, or widen the scope with `workflow_plan_amend` when the edit is intended.
 
-Keep the current Claude/GPT main conversation as planner, supervisor and final reviewer. External OpenCode workers perform implementation through the `agent-orchestrator` MCP tools. Do not change the main model, authentication, provider endpoint or subscription login.
+`resources` holds `taskTimeoutMinutes`, `workerMemoryLimitMB`, `workerSteps` and `tokenBudget`. None may exceed the effective limits from `workflow_repository_config`; a schema maximum is not the execution budget.
 
-The workflow_config response includes projectRoot: use that path to find configuration, bundled examples and diagnostics; the client working directory remains the user's coding repository. Do not assume it is the workflow installation folder.
+- `workerSteps` is the number of model steps one run may take (default from `workflow_config.workerSteps`, ceiling `maxWorkerSteps`). When it is used up the worker loses its tools and can only write a report.
+- `tokenBudget` caps the task's cumulative reported tokens. At the budget the run stops as `failed` with `WORKER_TOKEN_BUDGET`; the work is kept. Raise it with `workflow_plan_amend` only within the user's budget.
 
-Keep repository-specific scripts in their owning repository when possible. Local scripts and profiles maintained alongside this Skill belong in projectRoot/skills/orchestrate-code/repositories.local/<repository-id>/, with profile.json and scripts/ under that directory; it is ignored by Git. Read workflow_repository_config for the target repository before planning. If profile is null, call workflow_repository_init with only repository as a routine preparation step, then continue the user's task. Do not require the user to know about profiles, choose an ID, fill out a setup questionnaire or approve this minimal local bookkeeping. Task creation also initializes a missing profile if you omit this step. Existing profiles are reused unchanged. One Git common directory binds one profile across worktrees; separate clones have separate bindings.
+`environment` adds non-secret variables for the worker and for verification commands, for example `{"VCPKG_ROOT":"D:/vcpkg","PATH":"D:/tools/bin;${PATH}"}`. `${NAME}` expands from the inherited environment. Names that look like credentials are rejected; keys never belong in a contract. A repository profile can supply `defaults.environment` so every task inherits its toolchain.
 
-Minimal initialization records repository identity and empty preferences only. Unknown validation/resource/style settings remain unset and inherit built-in defaults; it does not infer test commands, permit skipping tests, or persist the current task's choices. Read repository-owned rules as part of normal planning. Save additional long-term preferences only when their persistent applicability is clear from the user's instruction, preserving unrelated existing preferences. Use workflow_repository_config_update with the profile's returned ID/current revision (normally 1 after init). A task-specific override does not update the profile. Ask only about consequential task decisions that cannot be resolved normally; profile setup itself should not interrupt the task.
+Size a task to fit one step budget: one coherent change with its tests. Removing a feature and repairing every shared test that mentions it is two tasks, or one task with a raised `workerSteps`. Give `workerChecks` that run in minutes.
 
-Only use this workflow when explicitly invoked. Read `workflow_config` first. If execution is disabled, stay in planning/review mode. A stored example task is not an instruction to run it; dispatch requires the user's task instruction and configured credentials.
+## Models and repository profiles
 
-Users own provider/model configuration and optional free-form `tags`. Treat labels as the user's assessment, not benchmark results or instructions that override task rules. Never invent, rewrite or persist labels from your own opinion. Read configured models/tags/keyPresent, honor an explicit user choice or repository provider preference, otherwise select among configured, key-present models by semantic fit between user labels and task needs. Record a concrete `modelSelectionReason` explaining relevant labels, task complexity and trade-offs; tagged choices require it. For example, a label about mechanical edits may fit a rename, while a label about nested state/design may fit an Apply/cache task; these are examples, not built-in ratings. If labels do not distinguish candidates, use the repository/default provider (deepseek) and explain the fallback rather than guessing model rankings. Missing keys or consequential ambiguity may require user input; do not silently change credentials or endpoints. New tasks pin the selected provider configuration/model/tags. Existing tasks retain their provider/session; legacy tasks pin on their next explicit dispatch. Model changes require explicit migration to a distinct task, not editing an active task's settings.
+Users own provider/model configuration and optional free-form `tags`. Treat tags as the user's assessment, not a benchmark or an instruction that overrides task rules; never invent, rewrite or persist them. Honor an explicit user choice or repository preference; otherwise choose among configured, key-present models by how the user's tags fit the task, and record a concrete `modelSelectionReason` (required for tagged models). If tags do not distinguish candidates, use the repository or default provider (deepseek) and say so. Missing keys or a consequential ambiguity may need the user; never change credentials or endpoints yourself. A task pins its provider, model, tags and pricing; changing models means a distinct task.
+
+`costReported` is the provider's own figure, or an estimate from the user's configured `pricing` when the provider reports none (`costCurrency`, `pricingConfigured`). Without pricing it stays 0, which does not mean free.
+
+Profiles live under `<projectRoot>/skills/orchestrate-code/repositories.local/<repository-id>/` with `profile.json` and `scripts/`; the directory is ignored by Git. One Git common directory binds one profile across worktrees. Minimal initialization records identity and empty preferences only: it infers no test commands and permits no skipped tests. Save a long-term preference only when the user's instruction clearly makes it persistent, with `workflow_repository_config_update` and the profile's current revision, preserving unrelated preferences. A task-specific override never updates the profile. Use `profile://scripts/<file>` in a check's command or args for locally maintained check scripts.
 
 ## Plan and investigate
 
-Read the target repository's instruction entry and relevant module rules as described in Start here. Use read-only investigator tasks for detailed exploration when useful; keep the main context focused on decisions, dependencies and evidence. The investigator can search/read files and use a narrow set of Git inspection commands; perform other needed read-only inspections yourself.
+Use read-only investigator tasks (`mode:"investigate"`) for detailed exploration when useful, and keep your own context for decisions, dependencies and evidence. Investigators can search and read files and run a few Git inspection commands.
 
-State the goal, acceptance criteria, scope, base branch, actual build/test commands and important decisions. Identify dependencies before parallelizing. Ask only about consequential product/design choices or missing information that blocks a sound implementation. Batch related questions. Honor any user-requested approval-before-code stage; do not treat elapsed time as approval.
+State the goal, acceptance criteria with stable IDs, scope, base, actual build/test commands and important decisions. Add `decisions`, `nonGoals`, `contextRefs`, `steps`, `autonomy` and overrides only when the task needs them; arrays you supply replace defaults, and repository `requirements.constraints` are always appended. Identify dependencies before parallelizing. Ask the user only about consequential product or design choices and blocking gaps; batch related questions. Honor a requested approval-before-code stage; elapsed time is not approval.
 
-Use workflow_task_create with spec containing id, repository, goal and acceptance items with stable IDs. Add this task's necessary decisions, nonGoals, contextRefs, steps, autonomy and overrides; omitted fields inherit repository defaults or built-in defaults (contractVersion/planRevision=1, baseRef=HEAD, branch=codex/<id>, a single adaptable step). Full contracts remain supported. Task-provided arrays replace defaults; repository requirements.constraints are always appended. Resources merge by field and cannot exceed repository/machine caps. The server stores a full resolved spec and configuration-vN.json with profile revision/hash, overrides and provenance. Read that artifact when you need the complete agreement. Do not send the whole chat or repeat inherited settings.
+Choose `workspaceMode`: `worktree` (recommended, isolated), `branch` (new branch in the repository directory) or `current` (the checked-out branch). Honor the user's choice. For `current` on a primary branch, first tell the user the task will modify that branch directly and record the displayed text in `mainBranchWarning`; this is a warning, not another approval. `branch` and `current` need a clean checkout and reserve that directory until the task is accepted or cancelled; never stash or reset the user's changes. For the latest upstream, use `fetchRemote:"origin"` and `baseRef:"origin/master"`. A dependency's code reaches a dependent task only if it was committed and verified before acceptance and is contained in the dependent's `baseRef`; `dependencies` alone do not merge code.
 
-For locally maintained check scripts, profile://scripts/<file> in command/args resolves under the bound profile directory when the contract is created/revised; the referenced file must exist and remain inside that directory. Commands run from the actual task workspace. Script files themselves remain repository/local-maintainer-owned and are not copied into the task snapshot. See docs/en/repository-preferences.md under projectRoot for setup, partial plan updates and explicit profile rebinding after a move/import.
-
-Choose workspaceMode for the task: worktree is recommended for isolation, branch creates a new branch in the repository directory, and current uses the branch already checked out. Honor the user's choice; worktrees are optional. For current on the primary branch, first tell the user clearly that the task will modify that branch directly, then record the displayed text in mainBranchWarning. This is a warning, not a request for another approval. Use workflow_prepare to record the actual workspace and base commit; current never resets or pulls the checkout. Branch/current require a clean checkout and reserve that directory for one task until accepted/cancelled; preserve existing changes or choose isolation rather than stashing/resetting them automatically. For latest master, use fetchRemote=origin and baseRef=origin/master. Keep distinct build directories when concurrent workspaces need them. Inheriting accepted dependency code requires prerequisites committed and verified BEFORE acceptance and present in baseRef; scheduling dependencies alone do not merge code.
-
-Separate testing in the contract: workerChecks contains targeted incremental checks; checks contains your planned independent validation commands. Choose scope yourself based on project size, changed modules, dependencies, risk and runtime: focused tests, affected-module tests, smoke, static checks or a full suite are all valid. Do not default large projects to a full build/test matrix. Honor current explicit user/project-required checks. Record your rationale and omitted coverage; do not claim unrun suites passed. Give checks stable names. Legacy workflow-generated full-suite mandates are superseded by this policy. Workers still run only incremental checks, recording bounded commands in criterion evidence if workerChecks is absent.
+Separate testing: `workerChecks` are the worker's targeted incremental checks; `checks` are your planned independent verification. Choose scope by project size, changed modules, risk and runtime. Do not default a large project to its full build/test matrix, but honor checks the user or project explicitly requires. Record your rationale and omitted coverage; never claim an unrun suite passed.
 
 ## Execute and supervise
 
-Read `workflow_capacity` and explain the planned concurrency, current maxParallel/free slots, dependency constraints, directory reservations and known build/memory/disk bottlenecks. Distinguish a configured two-worker ceiling from lack of parallel support. Slots are shared across repositories; dispatch does not queue. branch/current tasks in one directory serialize until acceptance/cancellation; use separate worktrees/directories for independent parallel work. Memory ceilings include compiler/test descendants and are not measured RAM usage or a shared host budget. Supervisor verification runs outside worker slots/guards and can contend for resources. Keep build targets/parallelism bounded with repository-owned recipes. Do not automatically raise limits, share mutable build directories, assume a shared compilation cache or create worktree pools. If a higher limit is useful, present its resource trade-offs and honor the user's budget.
+Tell the user the planned concurrency, current `maxParallel` and free slots, dependency order, directory reservations and known build/memory/disk limits. Slots are shared across repositories. `branch`/`current` tasks in one directory serialize; independent parallel work needs separate worktrees. Memory ceilings are per worker process tree, not measured usage. Verification runs outside worker slots and memory guards and still competes for the machine. Do not raise limits, share mutable build directories or assume a shared compilation cache on your own; present the trade-off and follow the user's budget.
 
-Dispatch independent tasks in different directories up to that limit. Use `workflow_wait` with the last revision values for bounded waits; inspect changes instead of narrating repeated identical status. Keep full transcripts in the backend; retrieve report/log excerpts only when they resolve a specific question. Workers implement and run incremental checks only. They do not control supervisor acceptance or recursively orchestrate other workers.
+Dispatch independent tasks up to the limit. For more tasks than slots, pass `queue:true`: the task becomes `queued` and starts by itself when a slot frees. A daemon restart drops the queue without running anything and marks the task with `queueError`.
 
-For a long shell wait, use the built-in CLI instead of writing a watcher. Replace `<projectRoot>` with the value from `workflow_config`:
+Wait with the CLI instead of writing a watcher:
 
 ```powershell
-node "<projectRoot>/dist/src/cli.js" wait <id>
+node "<projectRoot>/dist/src/cli.js" wait <id> [<id>...]
+node "<projectRoot>/dist/src/cli.js" wait <a> <b> --after <a>=<revision>
 node "<projectRoot>/dist/src/cli.js" wait <id> --until change --after <id>=<revision>
 ```
 
-When running in the installation directory, `npm run wait -- <id>` is equivalent. In a client with background-shell support, launch one waiter using that client's background-task option and use its completion notification; do not launch duplicate watchers. If background tasks are unavailable, keep using bounded `workflow_wait` calls with revision cursors.
+Launch one waiter with your client's background-task option and act on its completion; do not start duplicates. It takes up to eight IDs, prints one JSON result and returns when a task needs you: `attention` names those tasks. Tasks that were already accepted, integrated or cancelled when the wait started are ignored, so you can keep passing the same list. `--after <id>=<revision>` says you have already seen that task up to that revision; use it for a task you are still reviewing while others run. `--timeout-ms` sets an overall limit (exit 2); Ctrl+C exits 130 and only stops waiting. Without background tasks, use bounded `workflow_wait` calls with revision cursors. A waiter does not wake a disconnected supervisor.
 
-The CLI supports up to eight IDs and chains bounded backend reads in one process. Default `--until attention` returns when any task needs supervisor attention, including review, replan, failure or cancellation. `--until change` waits for a revision change; `--after <id>=<revision>` resumes a cursor. `--timeout-ms` sets the overall limit (default 0 is unlimited). It prints one JSON result: inspect `reason` and each task's status before choosing the next operation. Timeout exits 2; Ctrl+C exits 130 and only stops waiting. Attention is not acceptance. The CLI reconnects read requests and never dispatches work. It does not wake a disconnected supervisor.
+For progress, read `workflow_status {id}` and look at `run`: steps against the limit, tokens, the last tool and idle seconds. Live progress does not change `revision`, so it never wakes a waiter. Report changes, not repeated identical status. A long idle time with a build or test as the last tool is normal; idle with no tool for many minutes deserves a look at the workspace.
 
-Workers use dedicated executor/investigator system prompts. Built-in build/plan/general/explore/scout are disabled; task/plan tools are denied. They keep local implementation/debugging autonomy but return `needs_replan` when a fixed decision, architecture boundary or scope needs to change. Do not forbid necessary local reasoning or turn every implementation choice into a supervisor round trip.
+Workers keep local implementation and debugging autonomy, run incremental checks only, cannot accept their own work and cannot orchestrate other workers. They return `needs_replan` when a fixed decision, architecture boundary or scope must change. Do not turn every implementation choice into a round trip.
 
-workflow_config.workerMemoryLimitMB is the per-worker process-tree budget, default 3072 MiB. Windows Job Objects cover OpenCode and normally spawned compiler/test descendants. On WORKER_MEMORY_LIMIT inspect the worker memory artifact, reduce build parallelism/targets and diagnose before recovery. Do not blindly retry or bypass/increase the user's budget. The daemon/main conversation remains outside the worker job.
+How a run can end, and what to do:
 
-Read `report.json` for the criterion-linked report. For ordinary rework, invoke `workflow_review` with decision=rework and structured feedback: {planRevision, summary, findings:[{criterionIds, description, evidence, requestedChange}]}. Dispatch again to continue the same OpenCode session. Failed/interrupted/blocked sessions need the same structured diagnostic feedback at dispatch. Do not send unversioned free-text feedback.
+| Status | Meaning | Next step |
+|---|---|---|
+| `awaiting_review` | Valid report, ready for you | Review the code, verify, then accept or rework. |
+| `needs_changes` | You asked for rework, or `continuation.reason` is `report_invalid`: the work is done but the final report stayed invalid | Inspect `workflow_diff`, then `workflow_dispatch {id}`. Ordinary rework; no recovery attempt. |
+| `blocked` with `continuation.reason:"step_limit"` | The run used its whole step budget | `workflow_dispatch {id}` continues the same session, without feedback and without a recovery attempt, up to `maxStepContinuations` times in a row. Consider a larger `workerSteps` or a smaller task. |
+| `blocked` otherwise | Environment, access or dependency blocker | Diagnose, repair, then dispatch with diagnostic feedback (consumes a recovery attempt). |
+| `needs_replan` | The contract conflicts with the code or itself | Diagnose and `workflow_plan_update`; never redispatch an unchanged plan. |
+| `failed`, `interrupted` | The run did not complete | Read `lastError` and artifacts, inspect the workspace, then dispatch with diagnostic feedback (consumes a recovery attempt). |
 
-For needs_replan, diagnose the contradiction and use workflow_plan_update with expectedPlanRevision, a spec patch and changeReason. Omitted fields are preserved/resolved from the frozen profile; omitted planRevision becomes expected+1. Full revised specs remain supported. Set refreshRepositoryProfile=true only to explicitly adopt the current profile in a new plan revision; execution identity remains fixed. Ask the user only when the decision actually requires them. The update invalidates previous evidence/feedback and preserves the session, worktree, total run count and recovery budget. Do not dispatch an unchanged plan after needs_replan. Do not update active/accepted plans or change task execution identity; new repository/base/provider/mode needs a distinct task. Continue review, verification and rework until acceptance criteria are met; ordinary rework and needs_replan revisions have no round limit. maxAttempts defaults to 5 and only limits cumulative recovery dispatches after failed/interrupted/blocked runs. Initial execution and ordinary rework do not consume recovery budget. Plan updates, successful rounds and daemon restarts do not reset it. Recovery after a plan update still requires current diagnostic feedback. At the recovery limit, investigate or take over a focused fix; do not evade the limit by recreating identical tasks. Report supervisor takeover and its reason.
+`lastError` names the cause: `WORKER_MEMORY_LIMIT` (inspect the memory artifact, reduce build parallelism or targets; never bypass the user's budget), `WORKER_TOKEN_BUDGET`, a provider error, a timeout, or a process exit. Diagnose before retrying.
 
-The supervisor may make small integration changes or solve a worker's persistent blocker. Keep bulk implementation delegated. A valid report outcome ready_for_review leads to awaiting_review; blocked and needs_replan are explicit non-completion states. Invalid final JSON/schema/semantic reports receive at most one automatic report-only resubmission, with all tools disabled, the same task/plan/run/attempt/session, and concrete validation errors. It shares the task deadline, is capped at two minutes and records its own duration/tokens/cost without a recovery dispatch. Both errors remain recorded if resubmission fails; timeout/memory/provider/process failures are not report-format retries. Do not dispatch a second worker merely because status shows report repair in progress. A worker cannot report accepted.
+Feedback for rework and for recovery is always the structured form shown above, tied to the current `planRevision` and acceptance IDs; never free text. `maxAttempts` (default 5) limits only recovery dispatches after failed/interrupted/blocked runs. Initial execution, ordinary rework, step-limit continuations and report-invalid rework do not consume it; plan updates, successful rounds and daemon restarts do not reset it. At the limit, investigate or take over a focused fix and report the takeover; do not recreate the task to get a fresh budget.
 
-Persist consequential decisions, supervisor repairs, unresolved risks and next actions promptly with `workflow_note_add`; use kind decision/repair/risk/next_step/handoff, the current planRevision and relatedTaskIds when useful. Notes work before preparation, during execution, after branch changes and after terminal states. They are historical supervisor testimony without source fingerprints, never passing verification. Use `workflow_evidence_add` for concrete source-bound check/integration evidence. Before context reset, switching a shared directory or final reporting, record a concise handoff note. On resume, use `workflow_handoff` for up to eight task IDs; it returns recent notes/reviews and artifact references, preserving older history. It does not revalidate current source or restore acceptance. Build final reports from these records, distinguishing worker claims, independent checks, supervisor repairs and omitted coverage; do not reconstruct successful checks from memory.
+Report format: unknown keys, an oversized summary, markdown fences and check-list bookkeeping are normalized automatically and listed in `reportSubmissions[].normalizations`. Other invalid reports get one automatic tool-disabled resubmission in the same run; while status shows report repair, do not dispatch again.
+
+Two ways to change a task after creation:
+
+- `workflow_plan_amend` for supervisor-side fields: your planned `checks`, `allowedPaths` and `resources`. The plan revision, worker report, session and evidence stay. Changing `checks` voids a passing round that ran the planned selection.
+- `workflow_plan_update` for anything the worker acts on: goal, acceptance, steps, decisions, constraints, `workerChecks`. It bumps `planRevision`, clears the report, feedback and verification, and keeps the session, workspace, attempts and recovery budget. It cannot change the task's identity (repository, base, branch, provider, mode, workspace mode, dependencies); that needs a distinct task. Ask the user only when the decision is theirs.
+
+You may make small integration changes or resolve a worker's persistent blocker yourself; keep bulk implementation delegated.
+
+Record consequential decisions, repairs, unresolved risks and next actions with `workflow_note_add` (kind `decision`, `repair`, `risk`, `next_step` or `handoff`) as they happen, and write a handoff note before a context reset, before switching a shared directory and before the final report. Notes are your testimony without a source fingerprint and never count as verification. Build the final report from `workflow_handoff` and these records, separating worker claims, independent checks, your own repairs and omitted coverage; do not reconstruct passed checks from memory.
 
 ## Verify and accept
 
-Review actual changed code and issue coverage, then choose independent checks proportional to risk. Invoke workflow_verify with optional selection={strategy,rationale,checks,omittedCoverage}; strategy may be targeted/affected/smoke/full/custom. This changes the verification run without revising the whole task plan. Without selection it uses the planned checks. Default verificationPolicy=commands_required requires at least one passing independent command. Contracts with verificationPolicy=review_allowed may instead accept through workflow_review verification={mode:review_only,omittedCoverage:[...]}, with explicit rationale and concrete code-review evidence; empty checks alone never waive verification. The review records the current source fingerprint without inventing successful commands. Honor explicitly test-dependent acceptance criteria and current user/project-required checks. Full-suite testing is optional unless explicitly required. A worker's pending_supervisor criteria require your selected evidence and code review before acceptance. After repairs, select and rerun appropriate independent checks on current source, not automatically the whole suite. Verification records selection, exit codes, logs and a source fingerprint.
+Review the changed code and criterion coverage first, then choose independent checks in proportion to risk. `workflow_verify {id}` runs the planned checks. Pass `selection:{strategy,rationale,checks,omittedCoverage}` (strategy `targeted`, `affected`, `smoke`, `full` or `custom`) to run a different set without changing the plan.
 
-Use workflow_verify_stop {id,reason} to stop checks without cancelling the task. It waits for the check process tree to exit and returns to awaiting_review, retaining the worker report, completed checks and per-round artifacts. A stopped round does not grant acceptance; choose and run the appropriate checks again. A stop after completion leaves that completed round unchanged. workflow_status lists verificationHistory and unique round/log filenames; retrieve them through workflow_artifact instead of assuming verify-<check>.log.
+- A round stops at the first failing check. Pass `continueOnFailure:true` when the checks are independent and you want every result in one round.
+- A failed check carries `tail` (the end of its output), `exitDetail` for abnormal exit codes and its log name in `workflow_status`; read the full log with `workflow_artifact` only when the tail is not enough.
+- After a flaky or environmental failure, `workflow_verify {id,rerun:"failed"}` repeats the previous selection but runs only the checks that did not pass. Earlier passes are carried forward and marked `reusedFrom`, and only if the source is unchanged since that round. Say in your rationale that a check was rerun; do not rerun a real failure until it passes.
+- After any source change, including your own repairs, select and run suitable checks again on the current source.
 
-Record supervisor repairs and external tests through workflow_evidence_add {id,entry:{planRevision,kind,summary,criterionIds,evidence,log?}}, where kind is integration/verification/note. Supply concrete commands/results and criterion IDs. The server appends an artifact with the current source fingerprint and run identity; it does not execute those commands or treat testimony as a passing verification. Evidence can be appended after cancellation without reopening the task. Stop active execution before adding it.
+The default `verificationPolicy:"commands_required"` needs at least one passing independent command. A `review_allowed` contract may instead be accepted with `verification:{mode:"review_only",omittedCoverage:[...]}`, an explicit rationale and concrete code-review evidence; empty checks alone never waive verification. A worker's `pending_supervisor` criteria need your evidence and review before acceptance. A stopped round grants nothing; run suitable checks again.
 
-Use workflow_review decision=accept after code review and all independently selected checks pass on current source. State the strategy, concrete evidence, omitted coverage and residual risk in your rationale/final response. A worker report is not independent evidence; the server cannot prove semantic correctness or that the chosen scope is adequate.
+Record your own repairs and externally run tests with `workflow_evidence_add {id,entry:{planRevision,kind,summary,criterionIds,evidence,log?}}` (kind `integration`, `verification` or `note`). The server stores the current source fingerprint; it does not run the commands or treat them as passing verification.
 
-For multiple tasks, validate their combined result in an integration workspace; a separate worktree is recommended but optional. Creating/merging an integration branch is supervisor work in v0.2; it is not automatic. Do not push, create PRs, close issues or change GitHub state unless the user asks. Report workspace mode/path, branch/base commit, incremental and full check results separately, risks, and decisions requiring user review in Chinese.
+Accept only after code review and passing checks on the current source. State the strategy, evidence, omitted coverage and residual risk. A worker report is not independent evidence, and the server cannot judge whether your chosen scope was adequate.
+
+For several tasks, validate the combined result in an integration workspace; creating and merging an integration branch is your work, not automatic. Do not push, open PRs, close issues or change GitHub state unless the user asks. Report workspace mode and path, branch and base commit, incremental and independent check results separately, risks, and the decisions the user should review, in Chinese.
+
+## Housekeeping
+
+`workflow_status {}` lists only unfinished tasks. Old tasks left in `awaiting_review`, `blocked` or `failed` keep their directory reserved (`workflow_capacity` shows `idleDays`); ask the user whether to finish or cancel them rather than leaving them. `workflow_archive {ids}` moves accepted, integrated or cancelled tasks to `.runtime/archive`: their records, branches and IDs are kept and they stay readable with `workflow_status {id}`. Pass `removeWorktree:true` only when the user wants the worktree directories gone; Git refuses to remove one that holds uncommitted or untracked files.
 
 ## Recovery and limits
 
-The local daemon outlives MCP client disconnects. If the supervisor closes, workers may finish but no new planning/review happens until the supervisor resumes. `workflow_status` restores task IDs, worktrees, session IDs and evidence references, with separate total attempts and recoveryAttempts/recoveryAttemptLimit/remainingRecoveryAttempts. Unexpected daemon restarts mark in-flight tasks interrupted; resumption is explicit and consumes one recovery retry. A cancelled task keeps its files; cancellation does not undo edits.
+The local daemon outlives MCP client disconnects. If you close, workers may finish, but nothing is planned or reviewed until you resume. `workflow_status` restores task IDs, workspaces, session IDs and evidence references. An unexpected daemon restart marks in-flight tasks `interrupted`; resuming is explicit and consumes a recovery attempt. A cancelled task keeps its files; cancellation does not undo edits.
 
-OpenCode permissions and worktrees are not an OS sandbox. Use trusted repositories. The broad implementation shell permission is needed for existing build tools; publishing bans and allowedPaths are cooperation/review controls, not a claim that arbitrary shell code cannot bypass them. Investigators have file writes and general shell commands denied.
+OpenCode permissions and worktrees are not an OS sandbox. Use trusted repositories. The broad shell permission exists for build tools; publishing bans and `allowedPaths` are cooperation and review controls, not proof that shell code cannot bypass them. Investigators have file writes and general shell commands denied.

@@ -173,7 +173,7 @@ test('backend setup check verifies the real guard and MCP without starting a dae
   fs.symlinkSync(path.join(ROOT, 'node_modules', `opencode-windows-${process.arch}`), path.join(f.root, 'node_modules', `opencode-windows-${process.arch}`), 'junction');
   fs.writeFileSync(path.join(f.root, '.env.local'), 'FIXTURE_SETUP_KEY=offline-fixture\n');
   const result: any = await checkSetup(f.root, 'fixture');
-  assert.equal(result.passed, true); assert.equal(result.memoryGuard, 'passed'); assert.equal(result.mcpTools, 20);
+  assert.equal(result.passed, true); assert.equal(result.memoryGuard, 'passed'); assert.equal(result.mcpTools, 22);
   assert.equal(fs.existsSync(path.join(f.root, '.runtime/daemon.json')), false);
   assert.equal(fs.existsSync(path.join(f.root, 'skills/orchestrate-code/repositories.local')), false);
   fs.writeFileSync(path.join(f.root, '.env.local'), 'FIXTURE_SETUP_KEY=\n');

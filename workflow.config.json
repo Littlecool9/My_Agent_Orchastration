@@ -1,6 +1,6 @@
 {
   "executionEnabled": true,
-  "maxParallel": 2,
+  "maxParallel": 4,
   "maxAttempts": 5,
   "taskTimeoutMinutes": 90,
   "workerMemoryLimitMB": 3072,
